@@ -1,9 +1,12 @@
-umount /tmp/x10
-python simple-httpfs.py /tmp/x10
+DIR=x11
+umount /tmp/$DIR/https
+python simple-httpfs.py /tmp/$DIR/https https -f
 
-cat /tmp/x10/https/s3.amazonaws.com/pkerp/public/tiny.txt..
+exit 0
 
-umount test-dir10/
-python simple-httpfs.py test-dir10/
+cat /tmp/${DIR}/https/s3.amazonaws.com/pkerp/public/tiny.txt..
 
-cat test-dir10/https/s3.amazonaws.com/pkerp/public/tiny.txt..
+umount $DIR/https
+python simple-httpfs.py $DIR/https https
+
+cat $DIR/https/s3.amazonaws.com/pkerp/public/tiny.txt..

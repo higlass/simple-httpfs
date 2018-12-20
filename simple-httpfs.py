@@ -1,17 +1,15 @@
 #!/usr/bin/env python
-
-from errno import EIO
-from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
+from errno import EIO, ENOENT
 from stat import S_IFDIR, S_IFREG
 from threading import Timer
 from time import time
-
 import functools as ft
 import logging
 import os
-import os.path as op
-import requests
 import sys
+
+from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
+import requests
 
 BLOCK_SIZE = 2 ** 16
 
@@ -48,65 +46,17 @@ class LRUCache:
     def __len__(self):
         return len(self.cache)
 
-def get_path_start(path):
-    '''
-    Get the first part of the path
-
-    /x/y/z/ -> x
-
-    Parameters
-    ---------
-    path: string
-        The path to split
-    Returns 
-    -------
-    string: The first part of the path
-    '''
-    p = (path, '')
-
-    while p[0] != '' and p[0] != '/':
-        p = op.split(p[0])
-
-    return p[1]
-
-def get_protocol_and_url(path):
-    '''
-    Retrieve the protocol and url from the path
-
-    Parameters
-    ----------
-    path: string
-        The path passed in
-    Returns
-    -------
-    (protocol, path)
-    '''
-    # print("path:", path)
-    parts = op.normpath(path).split(os.sep)
-
-    if parts[0] == '':
-        if parts[1] == '':
-            return ('', '')
-        
-        protocol = parts[1]
-        if len(parts) == 2:
-            return (protocol, '')
-        
-        rest = op.join(*parts[2:])
-    else:
-        protocol = parts[0]
-        rest = op.join(*parts[1:])
-        
-    return (protocol, rest)
 
 class HttpFs(LoggingMixIn, Operations):
     """
     A read only http/https/ftp filesystem.
 
     """
-    def __init__(self, disk_cache_size=2**30, disk_cache_dir='/tmp/xx', lru_capacity=400):
+    def __init__(self, _schema, disk_cache_size=2**30, disk_cache_dir='/tmp/xx', lru_capacity=400):
+        self.schema = _schema
+        self.files = dict()
+        self.cleanup_thread = self._generate_cleanup_thread(start=False)
         self.lru_cache = LRUCache(capacity=lru_capacity)
-        self.lru_attrs = LRUCache(capacity=lru_capacity)
 
         self.disk_cache = dc.Cache(disk_cache_dir, disk_cache_size)
 
@@ -117,46 +67,42 @@ class HttpFs(LoggingMixIn, Operations):
         self.disk_misses = 0
 
     def init(self, path):
-        pass
-    
+        self.cleanup_thread.start()
 
     def getattr(self, path, fh=None):
         #logging.info("attr path: {}".format(path))
         
-        if path in self.lru_attrs:
-            return self.lru_attrs[path]
-        if path[-2:] == '..':
-            (protocol, rest) = get_protocol_and_url(path)
-            
-            if protocol not in ['http', 'https', 'ftp']:
-                logging.error("Invalid protocol")
-            url = '{}://{}'.format(protocol, rest[:-2])
+        if path in self.files:
+            return self.files[path]['attr']
+
+        elif path.endswith('..'):
+            url = '{}:/{}'.format(self.schema, path[:-2])
             
             # logging.info("attr url: {}".format(url))
             head = requests.head(url, allow_redirects=True)
             # logging.info("head: {}".format(head.headers))
             # logging.info("status_code: {}".format(head.status_code))
 
-            self.lru_attrs[path] = dict(
+            attr = dict(
                 st_mode=(S_IFREG | 0o644), 
                 st_nlink=1,
                 st_size=int(head.headers['Content-Length']),
                 st_ctime=time(), 
                 st_mtime=time(),
                 st_atime=time())
-            return self.lru_attrs[path]
+            
+            self.files[path] = dict(
+                time=time(), 
+                attr=attr)
+            return attr
 
-        return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+        else:
+            return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
 
     def read(self, path, size, offset, fh):
         #logging.info("read path: {}".format(path))
-        if path in self.lru_attrs:
-            (protocol, rest) = get_protocol_and_url(path)
-            
-            if protocol not in ['http', 'https', 'ftp']:
-                logging.error('Invalid protocol: {}'.format(protocol))
-            url = '{}://{}'.format(protocol, rest[:-2])
-
+        if path in self.files:
+            url = '{}:/{}'.format(self.schema, path[:-2])
             logging.info("read url: {}".format(url))
             logging.info("offset: {} - {} block: {}".format(offset, offset + size - 1, offset // 2 ** 18))
             output = [0 for i in range(size)]
@@ -195,6 +141,8 @@ class HttpFs(LoggingMixIn, Operations):
             logging.info("lru hits: {} lru misses: {} disk hits: {} disk misses: {}"
                     .format(self.lru_hits, self.lru_misses, self.disk_hits, self.disk_misses))
 
+            self.files[path]['time'] = t2  # extend life of cache entry
+
             logging.info("time: {:.2f}".format(t2 - t1))
             return bytes(output)
             
@@ -203,7 +151,28 @@ class HttpFs(LoggingMixIn, Operations):
             raise FuseOSError(EIO)
 
     def destroy(self, path):
-        pass
+        self.cleanup_thread.cancel()
+
+    def cleanup(self):
+        now = time()
+        num_files_before = len(self.files)
+        self.files = {
+            k: v for k, v in self.files.items() 
+                if now - v['time'] < CLEANUP_EXPIRED
+        }
+        num_files_after = len(self.files)
+        if num_files_before != num_files_after:
+            logging.info(
+                'Truncated cache from {} to {} files'.format(
+                    num_files_before, num_files_after))
+        self.cleanup_thread = self._generate_cleanup_thread()
+
+    def _generate_cleanup_thread(self, start=True):
+        cleanup_thread = Timer(CLEANUP_INTERVAL, self.cleanup)
+        cleanup_thread.daemon = True
+        if start:
+            cleanup_thread.start()
+        return cleanup_thread
 
     def get_block(self, url, block_num):
         '''
@@ -248,9 +217,10 @@ class HttpFs(LoggingMixIn, Operations):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="""
-    usage: simple-httpfs <mountpoint>
+    usage: httpfs <mountpoint> <http|https|ftp>
 """)
     parser.add_argument('mountpoint')
+    parser.add_argument('schema')
     parser.add_argument(
         '-f', '--foreground', 
         action='store_true', 
@@ -271,7 +241,7 @@ def main():
     logging.info("foreground: {}".format(args['foreground']))
     
     fuse = FUSE(
-        HttpFs(
+        HttpFs(args['schema'],
                disk_cache_size=args['disk_cache_size'],
                disk_cache_dir=args['disk_cache_dir'],
                lru_capacity=args['lru_capacity']
