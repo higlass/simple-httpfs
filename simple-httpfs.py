@@ -125,12 +125,15 @@ class HttpFs(LoggingMixIn, Operations):
         
         if path in self.lru_attrs:
             return self.lru_attrs[path]
+
+        (protocol, rest) = get_protocol_and_url(path)
+        print("path[-2:]", path[-2:])
         if path[-2:] == '..':
-            (protocol, rest) = get_protocol_and_url(path)
-            
+            print("pp", protocol)
             if protocol not in ['http', 'https', 'ftp']:
                 logging.error("Invalid protocol")
             url = '{}://{}'.format(protocol, rest[:-2])
+            print("url:", url)
             
             # logging.info("attr url: {}".format(url))
             head = requests.head(url, allow_redirects=True)
@@ -146,7 +149,15 @@ class HttpFs(LoggingMixIn, Operations):
                 st_atime=time())
             return self.lru_attrs[path]
 
-        return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+        print("protocol:", protocol, "path:", path)
+            
+        if protocol in ['http', 'https', 'ftp']:
+            print("returning dir")
+            return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+
+        print("stat:", os.stat(path))
+        return dict((key, getattr(os.stat(path), key)) for key in (
+            'st_atime', 'st_gid', 'st_mode', 'st_mtime', 'st_size', 'st_uid'))
 
     def read(self, path, size, offset, fh):
         #logging.info("read path: {}".format(path))
@@ -199,7 +210,7 @@ class HttpFs(LoggingMixIn, Operations):
             return bytes(output)
             
         else:
-            logging.info("file not found")
+            logging.info("file not found: {}".format(path))
             raise FuseOSError(EIO)
 
     def destroy(self, path):
