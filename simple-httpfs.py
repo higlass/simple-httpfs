@@ -127,33 +127,39 @@ class HttpFs(LoggingMixIn, Operations):
             return self.lru_attrs[path]
 
         (protocol, rest) = get_protocol_and_url(path)
-        print("path[-2:]", path[-2:])
-        if path[-2:] == '..':
-            print("pp", protocol)
-            if protocol not in ['http', 'https', 'ftp']:
-                logging.error("Invalid protocol")
-            url = '{}://{}'.format(protocol, rest[:-2])
+        print("path", path)
+
+        print("pp", protocol)
+        if protocol in ['http', 'https', 'ftp']:
+            if rest == '':
+                return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+            url = '{}://{}'.format(protocol, rest)
             print("url:", url)
             
             # logging.info("attr url: {}".format(url))
             head = requests.head(url, allow_redirects=True)
             # logging.info("head: {}".format(head.headers))
             # logging.info("status_code: {}".format(head.status_code))
+            print("url:", url, "head.url", head.url)
 
-            self.lru_attrs[path] = dict(
-                st_mode=(S_IFREG | 0o644), 
-                st_nlink=1,
-                st_size=int(head.headers['Content-Length']),
-                st_ctime=time(), 
-                st_mtime=time(),
-                st_atime=time())
+            try:
+                self.lru_attrs[path] = dict(
+                    st_mode=(S_IFREG | 0o644), 
+                    st_nlink=1,
+                    st_size=int(head.headers['Content-Length']),
+                    st_ctime=time(), 
+                    st_mtime=time(),
+                    st_atime=time())
+            except:
+                self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+
             return self.lru_attrs[path]
 
-        print("protocol:", protocol, "path:", path)
-            
+        '''
         if protocol in ['http', 'https', 'ftp']:
             print("returning dir")
             return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+        '''
 
         print("stat:", os.stat(path))
         return dict((key, getattr(os.stat(path), key)) for key in (
@@ -166,7 +172,7 @@ class HttpFs(LoggingMixIn, Operations):
             
             if protocol not in ['http', 'https', 'ftp']:
                 logging.error('Invalid protocol: {}'.format(protocol))
-            url = '{}://{}'.format(protocol, rest[:-2])
+            url = '{}://{}'.format(protocol, rest)
 
             logging.info("read url: {}".format(url))
             logging.info("offset: {} - {} block: {}".format(offset, offset + size - 1, offset // 2 ** 18))
