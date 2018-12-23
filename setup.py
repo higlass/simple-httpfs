@@ -6,7 +6,7 @@ setup(
     name='simple-httpfs',
     author='Peter Kerpedjiev',
     author_email='pkerpedjiev@gmail.com',
-    scripts=['simple-httpfs'],
+    scripts=['simple-httpfs.py'],
     url='https://github.com/higlass/simple-httpfs',
     license='LICENSE.txt',
     description='A simple FUSE filesystem for reading http files',
