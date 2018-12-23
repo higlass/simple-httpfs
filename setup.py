@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 from setuptools import setup, find_packages
+import versioneer
 
 setup(
     name='simple-httpfs',
     author='Peter Kerpedjiev',
     author_email='pkerpedjiev@gmail.com',
-    packages=[ 'httpfs' ],
     scripts=['simple-httpfs'],
     url='https://github.com/higlass/simple-httpfs',
     license='LICENSE.txt',
@@ -16,4 +16,6 @@ setup(
         "requests",
         "diskcache"
     ],
+    version=versioneer.get_version(),
+    cmdclass=versioneer.get_cmdclass()
 )
