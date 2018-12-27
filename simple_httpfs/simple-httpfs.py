@@ -1,10 +1,11 @@
+#!/usr/bin/env python
+
 import logging
 import os.path as op
 from fuse import FUSE
 
 from simple_httpfs import HttpFs
 
-#!/usr/bin/env python
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="""
