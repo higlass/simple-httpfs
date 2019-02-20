@@ -54,7 +54,8 @@ class HttpFs(LoggingMixIn, Operations):
     """
     SSL_VERIFY = os.environ.get('SSL_VERIFY', True) not in [0, '0', False, 'false', 'False', 'FALSE', 'off', 'OFF']
     def __init__(self, schema, disk_cache_size=2**30, disk_cache_dir='/tmp/xx', lru_capacity=400):
-        logging.info('SSL_VERIFY: %s' % self.SSL_VERIFY)
+        if not SSL_VERIFY:
+            logging.warning('You have set ssl certificates to not be verified. This may leave you vulnerable. http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification' % self.SSL_VERIFY)
         self.lru_cache = LRUCache(capacity=lru_capacity)
         self.lru_attrs = LRUCache(capacity=lru_capacity)
         self.schema = schema
