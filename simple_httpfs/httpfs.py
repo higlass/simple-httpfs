@@ -52,7 +52,9 @@ class HttpFs(LoggingMixIn, Operations):
     A read only http/https/ftp filesystem.
 
     """
+    SSL_VERIFY = os.environ.get('SSL_VERIFY', True) not in [0, '0', False, 'false', 'False', 'FALSE', 'off', 'OFF']
     def __init__(self, schema, disk_cache_size=2**30, disk_cache_dir='/tmp/xx', lru_capacity=400):
+        logging.info('SSL_VERIFY: %s' % self.SSL_VERIFY)
         self.lru_cache = LRUCache(capacity=lru_capacity)
         self.lru_attrs = LRUCache(capacity=lru_capacity)
         self.schema = schema
@@ -83,7 +85,7 @@ class HttpFs(LoggingMixIn, Operations):
 
         # logging.info("attr url: {}".format(url))
         try:
-            head = requests.head(url, allow_redirects=True)
+            head = requests.head(url, allow_redirects=True, verify=self.SSL_VERIFY)
         except:
             logging.error(traceback.format_exc())
             raise FuseOSError(ENOENT)
@@ -190,7 +192,7 @@ class HttpFs(LoggingMixIn, Operations):
                 headers = {
                     'Range': 'bytes={}-{}'.format(block_start, block_start + BLOCK_SIZE - 1)
                 }
-                r = requests.get(url, headers=headers)
+                r = requests.get(url, headers=headers, verify=self.SSL_VERIFY)
                 block_data = r.content
                 self.lru_cache[cache_key] = block_data
                 self.disk_cache[cache_key] = block_data

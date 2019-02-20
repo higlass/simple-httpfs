@@ -13,8 +13,8 @@ def main():
 """)
     parser.add_argument('mountpoint')
     parser.add_argument(
-        '-f', '--foreground', 
-        action='store_true', 
+        '-f', '--foreground',
+        action='store_true',
         default=False,
     	help='Run in the foreground')
 
@@ -32,7 +32,7 @@ def main():
     logging.getLogger().setLevel(logging.INFO)
     logging.info("starting:")
     logging.info("foreground: {}".format(args['foreground']))
-    
+
     if op.isfile(args['mountpoint']):
         print("Mount point must be a directory:", args['mountpoint'],
                 file=sys.stderr)
@@ -49,19 +49,18 @@ def main():
         if args['schema'] not in ['http', 'https', 'ftp']:
             print('Specified schema ({}) not one of http, https or ftp'.format(schema))
             return
-    
+
     fuse = FUSE(
         HttpFs(
                schema,
                disk_cache_size=args['disk_cache_size'],
                disk_cache_dir=args['disk_cache_dir'],
                lru_capacity=args['lru_capacity']
-            ), 
-        args['mountpoint'], 
+            ),
+        args['mountpoint'],
         foreground=args['foreground']
     )
 
 
 if __name__ == '__main__':
     main()
-
