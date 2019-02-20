@@ -10,6 +10,7 @@ import os
 import os.path as op
 import requests
 import sys
+import traceback
 
 BLOCK_SIZE = 2 ** 16
 
@@ -51,10 +52,13 @@ class HttpFs(LoggingMixIn, Operations):
     A read only http/https/ftp filesystem.
 
     """
+    SSL_VERIFY = os.environ.get('SSL_VERIFY', True) not in [0, '0', False, 'false', 'False', 'FALSE', 'off', 'OFF']
     def __init__(self, schema, disk_cache_size=2**30, disk_cache_dir='/tmp/xx', lru_capacity=400):
+        if not SSL_VERIFY:
+            logging.warning('You have set ssl certificates to not be verified. This may leave you vulnerable. http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification' % self.SSL_VERIFY)
         self.lru_cache = LRUCache(capacity=lru_capacity)
         self.lru_attrs = LRUCache(capacity=lru_capacity)
-        self.schema = schema 
+        self.schema = schema
 
         self.disk_cache = dc.Cache(disk_cache_dir, disk_cache_size)
 
@@ -66,7 +70,7 @@ class HttpFs(LoggingMixIn, Operations):
 
     def getattr(self, path, fh=None):
         #logging.info("attr path: {}".format(path))
-        
+
         if path in self.lru_attrs:
             return self.lru_attrs[path]
 
@@ -79,11 +83,12 @@ class HttpFs(LoggingMixIn, Operations):
 
 
         url = '{}:/{}'.format(self.schema, path[:-2])
-        
+
         # logging.info("attr url: {}".format(url))
         try:
-            head = requests.head(url, allow_redirects=True)
+            head = requests.head(url, allow_redirects=True, verify=self.SSL_VERIFY)
         except:
+            logging.error(traceback.format_exc())
             raise FuseOSError(ENOENT)
         # logging.info("head: {}".format(head.headers))
         # logging.info("status_code: {}".format(head.status_code))
@@ -92,10 +97,10 @@ class HttpFs(LoggingMixIn, Operations):
         try:
             size = int(head.headers['Content-Length'])
             self.lru_attrs[path] = dict(
-                st_mode=(S_IFREG | 0o644), 
+                st_mode=(S_IFREG | 0o644),
                 st_nlink=1,
                 st_size=int(head.headers['Content-Length']),
-                st_ctime=time(), 
+                st_ctime=time(),
                 st_mtime=time(),
                 st_atime=time())
         except:
@@ -148,7 +153,7 @@ class HttpFs(LoggingMixIn, Operations):
 
             logging.info("time: {:.2f}".format(t2 - t1))
             return bytes(output)
-            
+
         else:
             logging.info("file not found: {}".format(path))
             raise FuseOSError(EIO)
@@ -184,14 +189,13 @@ class HttpFs(LoggingMixIn, Operations):
             else:
                 self.disk_misses += 1
                 block_start = block_num * BLOCK_SIZE
-                
+
                 headers = {
                     'Range': 'bytes={}-{}'.format(block_start, block_start + BLOCK_SIZE - 1)
                 }
-                r = requests.get(url, headers=headers)
+                r = requests.get(url, headers=headers, verify=self.SSL_VERIFY)
                 block_data = r.content
                 self.lru_cache[cache_key] = block_data
                 self.disk_cache[cache_key] = block_data
 
         return block_data
-
