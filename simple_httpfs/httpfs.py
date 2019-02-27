@@ -11,6 +11,7 @@ import os.path as op
 import requests
 import sys
 import traceback
+import re
 
 BLOCK_SIZE = 2 ** 16
 
@@ -54,8 +55,8 @@ class HttpFs(LoggingMixIn, Operations):
     """
     SSL_VERIFY = os.environ.get('SSL_VERIFY', True) not in [0, '0', False, 'false', 'False', 'FALSE', 'off', 'OFF']
     def __init__(self, schema, disk_cache_size=2**30, disk_cache_dir='/tmp/xx', lru_capacity=400):
-        if not SSL_VERIFY:
-            logging.warning('You have set ssl certificates to not be verified. This may leave you vulnerable. http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification' % self.SSL_VERIFY)
+        if not self.SSL_VERIFY:
+            logging.warning('You have set ssl certificates to not be verified. This may leave you vulnerable. http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification')
         self.lru_cache = LRUCache(capacity=lru_capacity)
         self.lru_attrs = LRUCache(capacity=lru_capacity)
         self.schema = schema
@@ -67,6 +68,22 @@ class HttpFs(LoggingMixIn, Operations):
 
         self.disk_hits = 0
         self.disk_misses = 0
+
+    def getSize(self, url):
+        try:
+            head = requests.head(url, allow_redirects=True, verify=self.SSL_VERIFY)
+            return int(head.headers['Content-Length'])
+        except:
+            head = requests.get(url, allow_redirects=True, verify=self.SSL_VERIFY, headers={
+                'Range': 'bytes=0-1'
+            })
+            crange = head.headers['Content-Range']
+            match = re.search(r'/(\d+)$', 'bytes 0-1/900')
+            if match:
+                return int(match.group(1))
+
+            logging.error(traceback.format_exc())
+            raise FuseOSError(ENOENT)
 
     def getattr(self, path, fh=None):
         #logging.info("attr path: {}".format(path))
@@ -85,25 +102,21 @@ class HttpFs(LoggingMixIn, Operations):
         url = '{}:/{}'.format(self.schema, path[:-2])
 
         # logging.info("attr url: {}".format(url))
-        try:
-            head = requests.head(url, allow_redirects=True, verify=self.SSL_VERIFY)
-        except:
-            logging.error(traceback.format_exc())
-            raise FuseOSError(ENOENT)
+        size = self.getSize(url)
+
         # logging.info("head: {}".format(head.headers))
         # logging.info("status_code: {}".format(head.status_code))
         # print("url:", url, "head.url", head.url)
 
-        try:
-            size = int(head.headers['Content-Length'])
+        if size is not None:
             self.lru_attrs[path] = dict(
                 st_mode=(S_IFREG | 0o644),
                 st_nlink=1,
-                st_size=int(head.headers['Content-Length']),
+                st_size=size,
                 st_ctime=time(),
                 st_mtime=time(),
                 st_atime=time())
-        except:
+        else:
             self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
 
         return self.lru_attrs[path]
