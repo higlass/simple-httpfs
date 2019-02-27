@@ -78,7 +78,7 @@ class HttpFs(LoggingMixIn, Operations):
                 'Range': 'bytes=0-1'
             })
             crange = head.headers['Content-Range']
-            match = re.search(r'/(\d+)$', 'bytes 0-1/900')
+            match = re.search(r'/(\d+)$', crange)
             if match:
                 return int(match.group(1))
 
