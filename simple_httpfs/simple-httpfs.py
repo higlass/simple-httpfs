@@ -50,6 +50,8 @@ def main():
             print('Specified schema ({}) not one of http, https or ftp'.format(schema))
             return
 
+    print("protocol", schema)
+    print("mountpoint", args['mountpoint'])
     fuse = FUSE(
         HttpFs(
                schema,

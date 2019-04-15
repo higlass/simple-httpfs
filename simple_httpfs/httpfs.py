@@ -87,6 +87,8 @@ class HttpFs(LoggingMixIn, Operations):
 
     def getattr(self, path, fh=None):
         #logging.info("attr path: {}".format(path))
+        with open('/tmp/log', 'a') as f1:
+            f1.write("path: {}\n", path)
 
         if path in self.lru_attrs:
             return self.lru_attrs[path]
