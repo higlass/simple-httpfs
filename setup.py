@@ -13,9 +13,10 @@ setup(
       ]
     },
     url='https://github.com/higlass/simple-httpfs',
-    license='LICENSE.txt',
     description='A simple FUSE filesystem for reading http files',
+    license='MIT',
     long_description=open('README.md').read(),
+    long_description_content_type='text/markdown',
     install_requires=[
         "fusepy",
         "requests",
