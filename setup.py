@@ -9,7 +9,7 @@ setup(
     packages=['simple_httpfs'],
     entry_points={
       'console_scripts': [
-          'httpfs = simple_httpfs.__main__:main'
+          'simple-httpfs = simple_httpfs.__main__:main'
       ]
     },
     url='https://github.com/higlass/simple-httpfs',
