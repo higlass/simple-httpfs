@@ -21,6 +21,8 @@ def main():
     parser.add_argument(
         '--schema', default=None, type=str)
     parser.add_argument(
+        '--block-size', default=2**18, type=int)
+    parser.add_argument(
         '--disk-cache-size', default=2**30, type=int)
     parser.add_argument(
         '--disk-cache-dir', default='/tmp/xx')
@@ -29,7 +31,7 @@ def main():
 
     args = vars(parser.parse_args())
 
-    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger().setLevel(logging.WARN)
     logging.info("starting:")
     logging.info("foreground: {}".format(args['foreground']))
 
@@ -55,7 +57,8 @@ def main():
                schema,
                disk_cache_size=args['disk_cache_size'],
                disk_cache_dir=args['disk_cache_dir'],
-               lru_capacity=args['lru_capacity']
+               lru_capacity=args['lru_capacity'],
+               block_size=args['block_size']
             ),
         args['mountpoint'],
         foreground=args['foreground']

@@ -6,14 +6,13 @@ from time import time
 
 import functools as ft
 import logging
+import numpy as np
 import os
 import os.path as op
 import requests
 import sys
 import traceback
 import re
-
-BLOCK_SIZE = 2 ** 16
 
 CLEANUP_INTERVAL = 60
 CLEANUP_EXPIRED = 60
@@ -54,7 +53,7 @@ class HttpFs(LoggingMixIn, Operations):
 
     """
     SSL_VERIFY = os.environ.get('SSL_VERIFY', True) not in [0, '0', False, 'false', 'False', 'FALSE', 'off', 'OFF']
-    def __init__(self, schema, disk_cache_size=2**30, disk_cache_dir='/tmp/xx', lru_capacity=400):
+    def __init__(self, schema, disk_cache_size=2**30, disk_cache_dir='/tmp/xx', lru_capacity=400, block_size=2**18):
         if not self.SSL_VERIFY:
             logging.warning('You have set ssl certificates to not be verified. This may leave you vulnerable. http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification')
         self.lru_cache = LRUCache(capacity=lru_capacity)
@@ -68,6 +67,7 @@ class HttpFs(LoggingMixIn, Operations):
 
         self.disk_hits = 0
         self.disk_misses = 0
+        self.block_size = block_size
 
     def getSize(self, url):
         try:
@@ -127,8 +127,8 @@ class HttpFs(LoggingMixIn, Operations):
             url = '{}:/{}'.format(self.schema, path[:-2])
 
             logging.info("read url: {}".format(url))
-            logging.info("offset: {} - {} block: {}".format(offset, offset + size - 1, offset // 2 ** 18))
-            output = [0 for i in range(size)]
+            logging.info("offset: {} - {} request_size (KB): {:.2f} block: {}".format(offset, offset + size - 1, size / 2 ** 10, offset // self.block_size))
+            output = np.zeros((size,), np.uint8)
 
             t1 = time()
 
@@ -137,21 +137,21 @@ class HttpFs(LoggingMixIn, Operations):
             curr_start = offset
 
             while last_fetched < offset + size:
-                #print('curr_start', curr_start)
-                block_num = curr_start // BLOCK_SIZE
-                block_start = BLOCK_SIZE * (curr_start // BLOCK_SIZE)
+                block_num = curr_start // self.block_size
+                block_start = self.block_size * (curr_start // self.block_size)
 
-                #print("block_num:", block_num, "block_start:", block_start)
                 block_data = self.get_block(url, block_num)
 
-                data_start = curr_start - (curr_start // BLOCK_SIZE) * BLOCK_SIZE
-                data_end = min(BLOCK_SIZE, offset + size - block_start)
+                data_start = curr_start - (curr_start // self.block_size) * self.block_size
+                data_end = min(self.block_size, offset + size - block_start)
 
                 data = block_data[data_start:data_end]
 
                 #print("data_start:", data_start, data_end, data_end - data_start)
-                for (j,d) in enumerate(data):
-                    output[curr_start-offset+j] = d
+                # for (j,d) in enumerate(data):
+                #     output[curr_start-offset+j] = d
+                d_start = curr_start - offset
+                output[d_start:d_start+len(data)] = data
 
                 last_fetched = curr_start + (data_end - data_start)
                 curr_start += (data_end - data_start)
@@ -161,10 +161,11 @@ class HttpFs(LoggingMixIn, Operations):
             # logging.info("sending request")
             # logging.info(url)
             # logging.info(headers)
+
             logging.info("lru hits: {} lru misses: {} disk hits: {} disk misses: {}"
                     .format(self.lru_hits, self.lru_misses, self.disk_hits, self.disk_misses))
 
-            logging.info("time: {:.2f}".format(t2 - t1))
+            logging.info("time: {:.4f}".format(t2 - t1))
             return bytes(output)
 
         else:
@@ -185,12 +186,13 @@ class HttpFs(LoggingMixIn, Operations):
         block_num: int
             The # of the 256K'th block of this file
         '''
-        cache_key=  "{}.{}".format(url, block_num)
+        cache_key=  "{}.{}.{}".format(url, self.block_size, block_num)
         cache = self.disk_cache
 
         if cache_key in self.lru_cache:
             self.lru_hits += 1
-            return self.lru_cache[cache_key]
+            hit = self.lru_cache[cache_key]
+            return hit
         else:
             self.lru_misses += 1
 
@@ -201,13 +203,17 @@ class HttpFs(LoggingMixIn, Operations):
                 return block_data
             else:
                 self.disk_misses += 1
-                block_start = block_num * BLOCK_SIZE
+                block_start = block_num * self.block_size
 
                 headers = {
-                    'Range': 'bytes={}-{}'.format(block_start, block_start + BLOCK_SIZE - 1)
+                    'Range': 'bytes={}-{}'.format(block_start, block_start + self.block_size - 1),
+                    'Accept-Encoding': ''
                 }
-                r = requests.get(url, headers=headers, verify=self.SSL_VERIFY)
-                block_data = r.content
+                r = requests.get(url, headers=headers)
+                content = r.content
+                print("len(content", len(content))
+                block_data = np.frombuffer(r.content, dtype=np.uint8)
+                print('block_data', block_data.dtype, block_data.size)
                 self.lru_cache[cache_key] = block_data
                 self.disk_cache[cache_key] = block_data
 
