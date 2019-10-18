@@ -211,9 +211,7 @@ class HttpFs(LoggingMixIn, Operations):
                 }
                 r = requests.get(url, headers=headers)
                 content = r.content
-                print("len(content", len(content))
                 block_data = np.frombuffer(r.content, dtype=np.uint8)
-                print('block_data', block_data.dtype, block_data.size)
                 self.lru_cache[cache_key] = block_data
                 self.disk_cache[cache_key] = block_data
 
