@@ -1,10 +1,4 @@
-from errno import EIO, ENOENT
-from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
-from stat import S_IFDIR, S_IFREG
-from threading import Timer
-from time import time
-
-import functools as ft
+import collections
 import logging
 import numpy as np
 import os
@@ -13,15 +7,25 @@ import requests
 import sys
 import traceback
 import re
+from errno import EIO, ENOENT
+from stat import S_IFDIR, S_IFREG
+from threading import Timer
+from time import time
+
+from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
+import diskcache as dc
+
 
 CLEANUP_INTERVAL = 60
 CLEANUP_EXPIRED = 60
 
+
 DISK_CACHE_SIZE_ENV = 'HTTPFS_DISK_CACHE_SIZE'
 DISK_CACHE_DIR_ENV = 'HTTPFS_DISK_CACHE_DIR'
 
-import collections
-import diskcache as dc
+
+FALSY = {0, '0', False, 'false', 'False', 'FALSE', 'off', 'OFF'}
+
 
 class LRUCache:
     def __init__(self, capacity):
@@ -47,15 +51,22 @@ class LRUCache:
     def __len__(self):
         return len(self.cache)
 
+
 class HttpFs(LoggingMixIn, Operations):
     """
     A read only http/https/ftp filesystem.
 
     """
-    SSL_VERIFY = os.environ.get('SSL_VERIFY', True) not in [0, '0', False, 'false', 'False', 'FALSE', 'off', 'OFF']
-    def __init__(self, schema, disk_cache_size=2**30, disk_cache_dir='/tmp/xx', lru_capacity=400, block_size=2**18):
+    SSL_VERIFY = os.environ.get('SSL_VERIFY', True) not in FALSY
+
+    def __init__(self, schema, disk_cache_size=2**30,
+                 disk_cache_dir='/tmp/xx', lru_capacity=400, block_size=2**20):
         if not self.SSL_VERIFY:
-            logging.warning('You have set ssl certificates to not be verified. This may leave you vulnerable. http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification')
+            logging.warning(
+                'You have set ssl certificates to not be verified. '
+                'This may leave you vulnerable. '
+                'http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification')
+
         self.lru_cache = LRUCache(capacity=lru_capacity)
         self.lru_attrs = LRUCache(capacity=lru_capacity)
         self.schema = schema
@@ -71,12 +82,15 @@ class HttpFs(LoggingMixIn, Operations):
 
     def getSize(self, url):
         try:
-            head = requests.head(url, allow_redirects=True, verify=self.SSL_VERIFY)
+            head = requests.head(url, allow_redirects=True,
+                                 verify=self.SSL_VERIFY)
             return int(head.headers['Content-Length'])
         except:
-            head = requests.get(url, allow_redirects=True, verify=self.SSL_VERIFY, headers={
-                'Range': 'bytes=0-1'
-            })
+            head = requests.get(
+                url,
+                allow_redirects=True,
+                verify=self.SSL_VERIFY,
+                headers={'Range': 'bytes=0-1'})
             crange = head.headers['Content-Range']
             match = re.search(r'/(\d+)$', crange)
             if match:
@@ -97,7 +111,6 @@ class HttpFs(LoggingMixIn, Operations):
 
         if path[-2:] != '..':
             return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
-
 
         url = '{}:/{}'.format(self.schema, path[:-2])
 
@@ -142,16 +155,17 @@ class HttpFs(LoggingMixIn, Operations):
 
                 block_data = self.get_block(url, block_num)
 
-                data_start = curr_start - (curr_start // self.block_size) * self.block_size
-                data_end = min(self.block_size, offset + size - block_start)
+                data_start = (
+                    curr_start -
+                    (curr_start // self.block_size) * self.block_size
+                )
 
+                data_end = min(self.block_size, offset + size - block_start)
                 data = block_data[data_start:data_end]
 
-                #print("data_start:", data_start, data_end, data_end - data_start)
-                # for (j,d) in enumerate(data):
-                #     output[curr_start-offset+j] = d
                 d_start = curr_start - offset
                 output[d_start:d_start+len(data)] = data
+
 
                 last_fetched = curr_start + (data_end - data_start)
                 curr_start += (data_end - data_start)
@@ -161,9 +175,10 @@ class HttpFs(LoggingMixIn, Operations):
             # logging.info("sending request")
             # logging.info(url)
             # logging.info(headers)
-
-            logging.info("lru hits: {} lru misses: {} disk hits: {} disk misses: {}"
-                    .format(self.lru_hits, self.lru_misses, self.disk_hits, self.disk_misses))
+            logging.info(
+                "lru hits: {} lru misses: {} disk hits: {} disk misses: {}"
+                .format(self.lru_hits, self.lru_misses, self.disk_hits,
+                        self.disk_misses))
 
             logging.info("time: {:.4f}".format(t2 - t1))
             return bytes(output)
@@ -173,7 +188,7 @@ class HttpFs(LoggingMixIn, Operations):
             raise FuseOSError(EIO)
 
     def destroy(self, path):
-        pass
+        self.disk_cache.close()
 
     def get_block(self, url, block_num):
         '''
@@ -206,7 +221,8 @@ class HttpFs(LoggingMixIn, Operations):
                 block_start = block_num * self.block_size
 
                 headers = {
-                    'Range': 'bytes={}-{}'.format(block_start, block_start + self.block_size - 1),
+                    'Range': 'bytes={}-{}'.format(block_start,
+                        block_start + self.block_size - 1),
                     'Accept-Encoding': ''
                 }
                 r = requests.get(url, headers=headers)

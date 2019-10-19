@@ -1,1 +1,2 @@
 _version.py export-subst
+simple_httpfs/_version.py export-subst
