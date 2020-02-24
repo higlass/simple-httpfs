@@ -212,23 +212,26 @@ class HttpFs(LoggingMixIn, Operations):
             self.lru_misses += 1
 
             if cache_key in self.disk_cache:
-                self.disk_hits += 1
-                block_data = self.disk_cache[cache_key]
-                self.lru_cache[cache_key] = block_data
-                return block_data
-            else:
-                self.disk_misses += 1
-                block_start = block_num * self.block_size
+                try:
+                    block_data = self.disk_cache[cache_key]
+                    self.disk_hits += 1
+                    self.lru_cache[cache_key] = block_data
+                    return block_data
+                except KeyError:
+                    pass
 
-                headers = {
-                    'Range': 'bytes={}-{}'.format(block_start,
-                        block_start + self.block_size - 1),
-                    'Accept-Encoding': ''
-                }
-                r = requests.get(url, headers=headers)
-                content = r.content
-                block_data = np.frombuffer(r.content, dtype=np.uint8)
-                self.lru_cache[cache_key] = block_data
-                self.disk_cache[cache_key] = block_data
+            self.disk_misses += 1
+            block_start = block_num * self.block_size
+
+            headers = {
+                'Range': 'bytes={}-{}'.format(block_start,
+                    block_start + self.block_size - 1),
+                'Accept-Encoding': ''
+            }
+            r = requests.get(url, headers=headers)
+            content = r.content
+            block_data = np.frombuffer(r.content, dtype=np.uint8)
+            self.lru_cache[cache_key] = block_data
+            self.disk_cache[cache_key] = block_data
 
         return block_data
