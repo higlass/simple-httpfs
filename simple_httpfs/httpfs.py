@@ -105,6 +105,16 @@ class FtpFetcher:
 
 
 class HttpFetcher:
+    SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
+
+    def __init__(self):
+        if not self.SSL_VERIFY:
+            logging.warning(
+                "You have set ssl certificates to not be verified. "
+                "This may leave you vulnerable. "
+                "http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification"
+            )
+
     def get_size(self, url):
         try:
             head = requests.head(url, allow_redirects=True, verify=self.SSL_VERIFY)
@@ -137,8 +147,6 @@ class HttpFs(LoggingMixIn, Operations):
 
     """
 
-    SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
-
     def __init__(
         self,
         schema,
@@ -147,13 +155,6 @@ class HttpFs(LoggingMixIn, Operations):
         lru_capacity=400,
         block_size=2 ** 20,
     ):
-        if not self.SSL_VERIFY:
-            logging.warning(
-                "You have set ssl certificates to not be verified. "
-                "This may leave you vulnerable. "
-                "http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification"
-            )
-
         self.lru_cache = LRUCache(capacity=lru_capacity)
         self.lru_attrs = LRUCache(capacity=lru_capacity)
         self.schema = schema
