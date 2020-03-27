@@ -15,6 +15,7 @@ from time import time
 from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 import diskcache as dc
 
+import slugid
 from ftplib import FTP
 from urllib.parse import urlparse
 
@@ -63,6 +64,14 @@ class FtpFetcher:
     def login(self, server):
         ftp = FTP(server)
         ftp.login()
+
+        try:
+            # do a retrbinary on a non-existent file
+            # to set the transfer mode to binary
+            # use a dummy callback too
+            ftp.retrbinary(slugid.nice(), lambda x: x + 1)
+        except:
+            pass
 
         return ftp
 

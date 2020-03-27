@@ -1,1 +1,7 @@
 python setup.py sdist upload -r pypi
+
+head /tmp/ftp//ftp.ncbi.nlm.nih.gov/geo/samples/GSM3733nnn/GSM3733923/suppl/GSM3733923_Rad21_dCas9Control_Input.bw..
+head /tmp/ftp//ftp-mouse.sanger.ac.uk/current_bams/SJL_J.bam..
+
+simple-httpfs -f /Users/pete/projects/resgen-server/media/ftp
+simple-httpfs -f /Users/pete/projects/resgen-server/media/s3
