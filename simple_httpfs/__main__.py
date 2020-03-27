@@ -53,7 +53,8 @@ def main():
     else:
         schema = args['schema']
 
-    if schema not in ['http', 'https', 'ftp']:
+    print("schema:", schema)
+    if schema not in ['http', 'https', 'ftp', 's3']:
         print('Could not infer schema. Try specifying either http, '
               'https or ftp using the --schema argument',
                file=sys.stderr)

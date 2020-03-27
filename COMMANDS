@@ -5,3 +5,5 @@ head /tmp/ftp//ftp-mouse.sanger.ac.uk/current_bams/SJL_J.bam..
 
 simple-httpfs -f /Users/pete/projects/resgen-server/media/ftp
 simple-httpfs -f /Users/pete/projects/resgen-server/media/s3
+
+head /temp/s3/pkerp/public/Dixon2012-H1hESC-HindIII-allreps-filtered.1000kb.cool..

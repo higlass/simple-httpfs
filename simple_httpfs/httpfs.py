@@ -12,6 +12,8 @@ from stat import S_IFDIR, S_IFREG
 from threading import Timer
 from time import time
 
+import boto3
+
 from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 import diskcache as dc
 
@@ -29,6 +31,8 @@ DISK_CACHE_DIR_ENV = "HTTPFS_DISK_CACHE_DIR"
 
 FALSY = {0, "0", False, "false", "False", "FALSE", "off", "OFF"}
 
+
+logger = logging.getLogger(__name__)
 
 class LRUCache:
     def __init__(self, capacity):
@@ -149,6 +153,36 @@ class HttpFetcher:
         block_data = np.frombuffer(r.content, dtype=np.uint8)
         return block_data
 
+class S3Fetcher:
+    SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
+
+    def __init__(self):
+        print("1")
+        self.client = boto3.client('s3')
+        print("2")
+        pass
+
+    def parse_bucket_key(self, url):
+        url_parts = urlparse(url, allow_fragments=False)
+        bucket = url_parts.netloc
+        key = url_parts.path.strip('/')
+
+        return bucket, key
+    def get_size(self, url):
+        bucket, key = self.parse_bucket_key(url)
+        print("getting size", bucket, key)
+
+        response = self.client.head_object(Bucket=bucket, Key=key)
+        size = response['ContentLength']
+        print("size:", size)
+        return size
+
+    def get_data(self, url, start, end):
+        bucket, key = self.parse_bucket_key(url)
+        obj = boto3.resource('s3').Object(bucket, key)
+        stream = obj.get(Range="bytes={}-{}".format(start, end))['Body']
+        block_data = np.frombuffer(stream.read(), dtype=np.uint8)
+        return block_data
 
 class HttpFs(LoggingMixIn, Operations):
     """
@@ -164,6 +198,7 @@ class HttpFs(LoggingMixIn, Operations):
         lru_capacity=400,
         block_size=2 ** 20,
     ):
+        print("init")
         self.lru_cache = LRUCache(capacity=lru_capacity)
         self.lru_attrs = LRUCache(capacity=lru_capacity)
         self.schema = schema
@@ -172,6 +207,8 @@ class HttpFs(LoggingMixIn, Operations):
             self.fetcher = HttpFetcher()
         elif schema == "ftp":
             self.fetcher = FtpFetcher()
+        elif schema == 's3':
+            self.fetcher = S3Fetcher()
         else:
             raise ("Unknown schema: {}".format(schema))
 
@@ -185,10 +222,11 @@ class HttpFs(LoggingMixIn, Operations):
         self.block_size = block_size
 
     def getSize(self, url):
+        logger.info("size: {}".format(url))
         return self.fetcher.get_size(url)
 
     def getattr(self, path, fh=None):
-        # logging.info("attr path: {}".format(path))
+        logging.info("attr path: {}".format(path))
 
         if path in self.lru_attrs:
             return self.lru_attrs[path]
@@ -224,7 +262,7 @@ class HttpFs(LoggingMixIn, Operations):
         return self.lru_attrs[path]
 
     def read(self, path, size, offset, fh):
-        # logging.info("read path: {}".format(path))
+        logging.info("read path: {}".format(path))
         if path in self.lru_attrs:
             url = "{}:/{}".format(self.schema, path[:-2])
 
