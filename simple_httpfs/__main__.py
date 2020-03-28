@@ -41,6 +41,11 @@ def main():
         default=400,
         type=int)
 
+    parser.add_argument(
+        '--aws-profile',
+        default=None,
+        type=str)
+
     args = vars(parser.parse_args())
 
     if not op.isdir(args['mountpoint']):
@@ -53,7 +58,6 @@ def main():
     else:
         schema = args['schema']
 
-    print("schema:", schema)
     if schema not in ['http', 'https', 'ftp', 's3']:
         print('Could not infer schema. Try specifying either http, '
               'https or ftp using the --schema argument',
@@ -76,7 +80,8 @@ Mounting HTTP Filesystem...
                disk_cache_size=args['disk_cache_size'],
                disk_cache_dir=args['disk_cache_dir'],
                lru_capacity=args['lru_capacity'],
-               block_size=args['block_size']
+               block_size=args['block_size'],
+               aws_profile=args['aws_profile']
             ),
         args['mountpoint'],
         foreground=args['foreground']

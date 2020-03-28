@@ -91,9 +91,6 @@ class FtpFetcher:
         import time
 
         (server, path) = self.server_path(url)
-        t1 = time.time()
-        print("getting: {}-{}", start, end)
-
         ftp = self.login(server)
         conn = ftp.transfercmd("RETR {}".format(path), rest=start)
 
@@ -113,7 +110,6 @@ class FtpFetcher:
 
         ftp.close()
         t2 = time.time()
-        print(t2 - t1)
         return np.array(data, dtype=np.uint8)
 
 
@@ -156,10 +152,10 @@ class HttpFetcher:
 class S3Fetcher:
     SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
 
-    def __init__(self):
-        print("1")
-        self.client = boto3.client('s3')
-        print("2")
+    def __init__(self, aws_profile):
+        logger.info("Creating S3Fetcher with aws_profile=%s", aws_profile)
+        self.session = boto3.Session(profile_name=aws_profile)
+        self.client = self.session.client('s3')
         pass
 
     def parse_bucket_key(self, url):
@@ -170,18 +166,17 @@ class S3Fetcher:
         return bucket, key
     def get_size(self, url):
         bucket, key = self.parse_bucket_key(url)
-        print("getting size", bucket, key)
 
         response = self.client.head_object(Bucket=bucket, Key=key)
         size = response['ContentLength']
-        print("size:", size)
         return size
 
     def get_data(self, url, start, end):
         bucket, key = self.parse_bucket_key(url)
         obj = boto3.resource('s3').Object(bucket, key)
-        stream = obj.get(Range="bytes={}-{}".format(start, end))['Body']
-        block_data = np.frombuffer(stream.read(), dtype=np.uint8)
+        stream = self.client.get_object(Bucket=bucket, Key=key, Range="bytes={}-{}".format(start, end))['Body']
+        contents = stream.read()
+        block_data = np.frombuffer(contents, dtype=np.uint8)
         return block_data
 
 class HttpFs(LoggingMixIn, Operations):
@@ -197,8 +192,8 @@ class HttpFs(LoggingMixIn, Operations):
         disk_cache_dir="/tmp/xx",
         lru_capacity=400,
         block_size=2 ** 20,
+        aws_profile=None
     ):
-        print("init")
         self.lru_cache = LRUCache(capacity=lru_capacity)
         self.lru_attrs = LRUCache(capacity=lru_capacity)
         self.schema = schema
@@ -208,12 +203,13 @@ class HttpFs(LoggingMixIn, Operations):
         elif schema == "ftp":
             self.fetcher = FtpFetcher()
         elif schema == 's3':
-            self.fetcher = S3Fetcher()
+            self.fetcher = S3Fetcher(aws_profile)
         else:
             raise ("Unknown schema: {}".format(schema))
 
         self.disk_cache = dc.Cache(disk_cache_dir, disk_cache_size)
 
+        self.total_blocks = 0
         self.lru_hits = 0
         self.lru_misses = 0
 
@@ -235,13 +231,16 @@ class HttpFs(LoggingMixIn, Operations):
             self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
             return self.lru_attrs[path]
 
-        if path[-2:] != "..":
+        if path[-2:] != ".." and not path.endswith('..-journal') and not path.endswith('..-wal'):
             return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
 
         url = "{}:/{}".format(self.schema, path[:-2])
 
-        # logging.info("attr url: {}".format(url))
-        size = self.getSize(url)
+        # there's an exception for the -jounral files created by SQLite
+        if not path.endswith('..-journal') and not path.endswith('..-wal'):
+            size = self.getSize(url)
+        else:
+            size = 0
 
         # logging.info("head: {}".format(head.headers))
         # logging.info("status_code: {}".format(head.status_code))
@@ -260,6 +259,16 @@ class HttpFs(LoggingMixIn, Operations):
             self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
 
         return self.lru_attrs[path]
+
+
+    def unlink(self, path):
+        return 0
+
+    def create(self, path, mode, fi=None):
+        return 0
+
+    def write(self, path, buf, size, offset, fip):
+        return 0
 
     def read(self, path, size, offset, fh):
         logging.info("read path: {}".format(path))
@@ -311,7 +320,9 @@ class HttpFs(LoggingMixIn, Operations):
             )
 
             logging.info("time: {:.4f}".format(t2 - t1))
-            return bytes(output)
+            bts = bytes(output)
+
+            return bts
 
         else:
             logging.info("file not found: {}".format(path))
@@ -333,6 +344,8 @@ class HttpFs(LoggingMixIn, Operations):
         """
         cache_key = "{}.{}.{}".format(url, self.block_size, block_num)
         cache = self.disk_cache
+
+        self.total_blocks += 1
 
         if cache_key in self.lru_cache:
             self.lru_hits += 1
