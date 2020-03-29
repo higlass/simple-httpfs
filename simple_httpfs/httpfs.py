@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 CLEANUP_INTERVAL = 60
 CLEANUP_EXPIRED = 60
 
+REPORT_INTERVAL = 60
 
 DISK_CACHE_SIZE_ENV = "HTTPFS_DISK_CACHE_SIZE"
 DISK_CACHE_DIR_ENV = "HTTPFS_DISK_CACHE_DIR"
@@ -31,8 +32,6 @@ DISK_CACHE_DIR_ENV = "HTTPFS_DISK_CACHE_DIR"
 
 FALSY = {0, "0", False, "false", "False", "FALSE", "off", "OFF"}
 
-
-logger = logging.getLogger(__name__)
 
 class LRUCache:
     def __init__(self, capacity):
@@ -152,8 +151,9 @@ class HttpFetcher:
 class S3Fetcher:
     SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
 
-    def __init__(self, aws_profile):
-        logger.info("Creating S3Fetcher with aws_profile=%s", aws_profile)
+    def __init__(self, aws_profile, logger):
+        self.logger = logger
+        self.logger.info("Creating S3Fetcher with aws_profile=%s", aws_profile)
         self.session = boto3.Session(profile_name=aws_profile)
         self.client = self.session.client('s3')
         pass
@@ -192,18 +192,25 @@ class HttpFs(LoggingMixIn, Operations):
         disk_cache_dir="/tmp/xx",
         lru_capacity=400,
         block_size=2 ** 20,
-        aws_profile=None
+        aws_profile=None,
+        logger=None,
     ):
         self.lru_cache = LRUCache(capacity=lru_capacity)
         self.lru_attrs = LRUCache(capacity=lru_capacity)
         self.schema = schema
+        self.logger = logger
+        self.last_report_time = 0
+        self.total_requests = 0
+
+        if not self.logger:
+            self.logger = logging.getLogger(__name__)
 
         if schema == "http" or schema == "https":
             self.fetcher = HttpFetcher()
         elif schema == "ftp":
             self.fetcher = FtpFetcher()
         elif schema == 's3':
-            self.fetcher = S3Fetcher(aws_profile)
+            self.fetcher = S3Fetcher(aws_profile, self.logger)
         else:
             raise ("Unknown schema: {}".format(schema))
 
@@ -218,48 +225,52 @@ class HttpFs(LoggingMixIn, Operations):
         self.block_size = block_size
 
     def getSize(self, url):
-        logger.info("size: {}".format(url))
-        return self.fetcher.get_size(url)
+        try:
+            return self.fetcher.get_size(url)
+        except Exception as ex:
+            self.logger.exception(ex)
+            raise
 
     def getattr(self, path, fh=None):
-        logging.info("attr path: {}".format(path))
+        try:
+            if path in self.lru_attrs:
+                return self.lru_attrs[path]
 
-        if path in self.lru_attrs:
+            if path == "/":
+                self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+                return self.lru_attrs[path]
+
+            if path[-2:] != ".." and not path.endswith('..-journal') and not path.endswith('..-wal'):
+                return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+
+            url = "{}:/{}".format(self.schema, path[:-2])
+
+            # there's an exception for the -jounral files created by SQLite
+            if not path.endswith('..-journal') and not path.endswith('..-wal'):
+                size = self.getSize(url)
+            else:
+                size = 0
+
+            # logging.info("head: {}".format(head.headers))
+            # logging.info("status_code: {}".format(head.status_code))
+            # print("url:", url, "head.url", head.url)
+
+            if size is not None:
+                self.lru_attrs[path] = dict(
+                    st_mode=(S_IFREG | 0o644),
+                    st_nlink=1,
+                    st_size=size,
+                    st_ctime=time(),
+                    st_mtime=time(),
+                    st_atime=time(),
+                )
+            else:
+                self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+
             return self.lru_attrs[path]
-
-        if path == "/":
-            self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
-            return self.lru_attrs[path]
-
-        if path[-2:] != ".." and not path.endswith('..-journal') and not path.endswith('..-wal'):
-            return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
-
-        url = "{}:/{}".format(self.schema, path[:-2])
-
-        # there's an exception for the -jounral files created by SQLite
-        if not path.endswith('..-journal') and not path.endswith('..-wal'):
-            size = self.getSize(url)
-        else:
-            size = 0
-
-        # logging.info("head: {}".format(head.headers))
-        # logging.info("status_code: {}".format(head.status_code))
-        # print("url:", url, "head.url", head.url)
-
-        if size is not None:
-            self.lru_attrs[path] = dict(
-                st_mode=(S_IFREG | 0o644),
-                st_nlink=1,
-                st_size=size,
-                st_ctime=time(),
-                st_mtime=time(),
-                st_atime=time(),
-            )
-        else:
-            self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
-
-        return self.lru_attrs[path]
-
+        except Exception as ex:
+            self.logger.exception(ex)
+            raise
 
     def unlink(self, path):
         return 0
@@ -271,62 +282,63 @@ class HttpFs(LoggingMixIn, Operations):
         return 0
 
     def read(self, path, size, offset, fh):
-        logging.info("read path: {}".format(path))
-        if path in self.lru_attrs:
-            url = "{}:/{}".format(self.schema, path[:-2])
+        t1 = time()
 
-            logging.info("read url: {}".format(url))
-            logging.info(
-                "offset: {} - {} request_size (KB): {:.2f} block: {}".format(
-                    offset, offset + size - 1, size / 2 ** 10, offset // self.block_size
+        if t1 - self.last_report_time > REPORT_INTERVAL:
+            self.logger.info(
+                        "lru hits: {} lru misses: {} disk hits: {} total_requests: {}".format(
+                            self.lru_hits, self.lru_misses, self.disk_hits, self.disk_misses, self.total_requests
+                        )
+                    )
+            self.last_report_time = t1
+        try:
+            self.total_requests += 1
+            if path in self.lru_attrs:
+                url = "{}:/{}".format(self.schema, path[:-2])
+
+                self.logger.debug("read url: {}".format(url))
+                self.logger.debug(
+                    "offset: {} - {} request_size (KB): {:.2f} block: {}".format(
+                        offset, offset + size - 1, size / 2 ** 10, offset // self.block_size
+                    )
                 )
-            )
-            output = np.zeros((size,), np.uint8)
+                output = np.zeros((size,), np.uint8)
 
-            t1 = time()
+                t1 = time()
 
-            # nothing fetched yet
-            last_fetched = -1
-            curr_start = offset
+                # nothing fetched yet
+                last_fetched = -1
+                curr_start = offset
 
-            while last_fetched < offset + size:
-                block_num = curr_start // self.block_size
-                block_start = self.block_size * (curr_start // self.block_size)
+                while last_fetched < offset + size:
+                    block_num = curr_start // self.block_size
+                    block_start = self.block_size * (curr_start // self.block_size)
 
-                block_data = self.get_block(url, block_num)
+                    block_data = self.get_block(url, block_num)
 
-                data_start = (
-                    curr_start - (curr_start // self.block_size) * self.block_size
-                )
+                    data_start = (
+                        curr_start - (curr_start // self.block_size) * self.block_size
+                    )
 
-                data_end = min(self.block_size, offset + size - block_start)
-                data = block_data[data_start:data_end]
+                    data_end = min(self.block_size, offset + size - block_start)
+                    data = block_data[data_start:data_end]
 
-                d_start = curr_start - offset
-                output[d_start : d_start + len(data)] = data
+                    d_start = curr_start - offset
+                    output[d_start : d_start + len(data)] = data
 
-                last_fetched = curr_start + (data_end - data_start)
-                curr_start += data_end - data_start
+                    last_fetched = curr_start + (data_end - data_start)
+                    curr_start += data_end - data_start
 
-            t2 = time()
+                bts = bytes(output)
 
-            # logging.info("sending request")
-            # logging.info(url)
-            # logging.info(headers)
-            logging.info(
-                "lru hits: {} lru misses: {} disk hits: {} disk misses: {}".format(
-                    self.lru_hits, self.lru_misses, self.disk_hits, self.disk_misses
-                )
-            )
+                return bts
 
-            logging.info("time: {:.4f}".format(t2 - t1))
-            bts = bytes(output)
-
-            return bts
-
-        else:
-            logging.info("file not found: {}".format(path))
-            raise FuseOSError(EIO)
+            else:
+                logging.info("file not found: {}".format(path))
+                raise FuseOSError(EIO)
+        except Exception as ex:
+            self.logger.exception(ex)
+            raise
 
     def destroy(self, path):
         self.disk_cache.close()
