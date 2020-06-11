@@ -66,7 +66,7 @@ def main():
         sys.exit(1)
 
     logger = logging.getLogger('simple-httpfs')
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     if args['log']:
         hdlr = logging.FileHandler(args['log'])
