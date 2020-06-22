@@ -48,7 +48,7 @@ def main():
         type=str)
     
     parser.add_argument(
-        '-o', '--allow-other',
+        '-a', '--allow-other',
         action='store_true',
         default=False,
         help='Allow other users to access this fuse')
