@@ -134,6 +134,8 @@ class HttpFetcher:
                 verify=self.SSL_VERIFY,
                 headers={"Range": "bytes=0-1"},
             )
+            print("url:", url)
+            print("headers:", head.headers)
             crange = head.headers["Content-Range"]
             match = re.search(r"/(\d+)$", crange)
             if match:
@@ -148,6 +150,7 @@ class HttpFetcher:
         block_data = np.frombuffer(r.content, dtype=np.uint8)
         return block_data
 
+
 class S3Fetcher:
     SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
 
@@ -155,29 +158,33 @@ class S3Fetcher:
         self.logger = logger
         self.logger.info("Creating S3Fetcher with aws_profile=%s", aws_profile)
         self.session = boto3.Session(profile_name=aws_profile)
-        self.client = self.session.client('s3')
+        self.client = self.session.client("s3")
         pass
 
     def parse_bucket_key(self, url):
         url_parts = urlparse(url, allow_fragments=False)
         bucket = url_parts.netloc
-        key = url_parts.path.strip('/')
+        key = url_parts.path.strip("/")
 
         return bucket, key
+
     def get_size(self, url):
         bucket, key = self.parse_bucket_key(url)
 
         response = self.client.head_object(Bucket=bucket, Key=key)
-        size = response['ContentLength']
+        size = response["ContentLength"]
         return size
 
     def get_data(self, url, start, end):
         bucket, key = self.parse_bucket_key(url)
-        obj = boto3.resource('s3').Object(bucket, key)
-        stream = self.client.get_object(Bucket=bucket, Key=key, Range="bytes={}-{}".format(start, end))['Body']
+        obj = boto3.resource("s3").Object(bucket, key)
+        stream = self.client.get_object(
+            Bucket=bucket, Key=key, Range="bytes={}-{}".format(start, end)
+        )["Body"]
         contents = stream.read()
         block_data = np.frombuffer(contents, dtype=np.uint8)
         return block_data
+
 
 class HttpFs(LoggingMixIn, Operations):
     """
@@ -209,7 +216,7 @@ class HttpFs(LoggingMixIn, Operations):
             self.fetcher = HttpFetcher()
         elif schema == "ftp":
             self.fetcher = FtpFetcher()
-        elif schema == 's3':
+        elif schema == "s3":
             self.fetcher = S3Fetcher(aws_profile, self.logger)
         else:
             raise ("Unknown schema: {}".format(schema))
@@ -240,13 +247,17 @@ class HttpFs(LoggingMixIn, Operations):
                 self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
                 return self.lru_attrs[path]
 
-            if path[-2:] != ".." and not path.endswith('..-journal') and not path.endswith('..-wal'):
+            if (
+                path[-2:] != ".."
+                and not path.endswith("..-journal")
+                and not path.endswith("..-wal")
+            ):
                 return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
 
             url = "{}:/{}".format(self.schema, path[:-2])
 
             # there's an exception for the -jounral files created by SQLite
-            if not path.endswith('..-journal') and not path.endswith('..-wal'):
+            if not path.endswith("..-journal") and not path.endswith("..-wal"):
                 size = self.getSize(url)
             else:
                 size = 0
@@ -286,11 +297,14 @@ class HttpFs(LoggingMixIn, Operations):
 
         if t1 - self.last_report_time > REPORT_INTERVAL:
             self.logger.info(
-                        "lru hits: {} lru misses: {} disk hits: {} total_requests: {}".format(
-                            self.lru_hits, self.lru_misses, self.disk_hits, self.disk_misses, self.total_requests
-                        )
-                    )
-            self.last_report_time = t1
+                "lru hits: {} lru misses: {} disk hits: {} total_requests: {}".format(
+                    self.lru_hits,
+                    self.lru_misses,
+                    self.disk_hits,
+                    self.disk_misses,
+                    self.total_requests,
+                )
+            )
         try:
             self.total_requests += 1
             if path in self.lru_attrs:
@@ -299,7 +313,10 @@ class HttpFs(LoggingMixIn, Operations):
                 self.logger.debug("read url: {}".format(url))
                 self.logger.debug(
                     "offset: {} - {} request_size (KB): {:.2f} block: {}".format(
-                        offset, offset + size - 1, size / 2 ** 10, offset // self.block_size
+                        offset,
+                        offset + size - 1,
+                        size / 2 ** 10,
+                        offset // self.block_size,
                     )
                 )
                 output = np.zeros((size,), np.uint8)
