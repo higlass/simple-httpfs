@@ -18,9 +18,11 @@ setup(
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     install_requires=[
+        "boto3",
+        "diskcache",
         "fusepy",
         "requests",
-        "diskcache"
+        "slugid",
     ],
     version=versioneer.get_version(),
     cmdclass=versioneer.get_cmdclass()
