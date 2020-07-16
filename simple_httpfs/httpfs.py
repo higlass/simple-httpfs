@@ -10,6 +10,9 @@ import re
 from errno import EIO, ENOENT
 from stat import S_IFDIR, S_IFREG
 from threading import Timer
+from tenacity import retry, wait_exponential
+
+from time import sleep
 from time import time
 
 import boto3
@@ -115,9 +118,10 @@ class FtpFetcher:
 class HttpFetcher:
     SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
 
-    def __init__(self):
+    def __init__(self, logger):
+        self.logger = logger
         if not self.SSL_VERIFY:
-            logging.warning(
+            logger.warning(
                 "You have set ssl certificates to not be verified. "
                 "This may leave you vulnerable. "
                 "http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification"
@@ -134,19 +138,21 @@ class HttpFetcher:
                 verify=self.SSL_VERIFY,
                 headers={"Range": "bytes=0-1"},
             )
-            print("url:", url)
-            print("headers:", head.headers)
             crange = head.headers["Content-Range"]
             match = re.search(r"/(\d+)$", crange)
             if match:
                 return int(match.group(1))
 
-            logging.error(traceback.format_exc())
+            self.logger.error(traceback.format_exc())
             raise FuseOSError(ENOENT)
 
+    @retry(wait=wait_exponential(multiplier=1, min=4, max=10))
     def get_data(self, url, start, end):
         headers = {"Range": "bytes={}-{}".format(start, end), "Accept-Encoding": ""}
+        self.logger.info("gettings %s %s %s", url, start, end)
         r = requests.get(url, headers=headers)
+        self.logger.info("got %s", r.status_code)
+        r.raise_for_status()
         block_data = np.frombuffer(r.content, dtype=np.uint8)
         return block_data
 
@@ -208,12 +214,13 @@ class HttpFs(LoggingMixIn, Operations):
         self.logger = logger
         self.last_report_time = 0
         self.total_requests = 0
+        self.getting = set()
 
         if not self.logger:
             self.logger = logging.getLogger(__name__)
 
         if schema == "http" or schema == "https":
-            self.fetcher = HttpFetcher()
+            self.fetcher = HttpFetcher(self.logger)
         elif schema == "ftp":
             self.fetcher = FtpFetcher()
         elif schema == "s3":
@@ -295,7 +302,10 @@ class HttpFs(LoggingMixIn, Operations):
     def read(self, path, size, offset, fh):
         t1 = time()
 
+        # self.logger.info('read %s %s %s', path, offset, size)
+
         if t1 - self.last_report_time > REPORT_INTERVAL:
+            """
             self.logger.info(
                 "lru hits: {} lru misses: {} disk hits: {} total_requests: {}".format(
                     self.lru_hits,
@@ -305,6 +315,8 @@ class HttpFs(LoggingMixIn, Operations):
                     self.total_requests,
                 )
             )
+            """
+            pass
         try:
             self.total_requests += 1
             if path in self.lru_attrs:
@@ -331,7 +343,13 @@ class HttpFs(LoggingMixIn, Operations):
                     block_num = curr_start // self.block_size
                     block_start = self.block_size * (curr_start // self.block_size)
 
+                    block_id = (url, block_num)
+                    while block_id in self.getting:
+                        sleep(0.05)
+
+                    self.getting.add(block_id)
                     block_data = self.get_block(url, block_num)
+                    self.getting.remove(block_id)
 
                     data_start = (
                         curr_start - (curr_start // self.block_size) * self.block_size
