@@ -152,6 +152,7 @@ class HttpFetcher:
         self.logger.info("gettings %s %s %s", url, start, end)
         r = requests.get(url, headers=headers)
         self.logger.info("got %s", r.status_code)
+        print("got", r.status_code)
         r.raise_for_status()
         block_data = np.frombuffer(r.content, dtype=np.uint8)
         return block_data
@@ -181,6 +182,7 @@ class S3Fetcher:
         size = response["ContentLength"]
         return size
 
+    @retry(wait=wait_exponential(multiplier=1, min=4, max=10))
     def get_data(self, url, start, end):
         bucket, key = self.parse_bucket_key(url)
         obj = boto3.resource("s3").Object(bucket, key)
@@ -302,7 +304,7 @@ class HttpFs(LoggingMixIn, Operations):
     def read(self, path, size, offset, fh):
         t1 = time()
 
-        # self.logger.info('read %s %s %s', path, offset, size)
+        # print("read %s %s %s", path, offset, size)
 
         if t1 - self.last_report_time > REPORT_INTERVAL:
             """
@@ -413,6 +415,7 @@ class HttpFs(LoggingMixIn, Operations):
             self.disk_misses += 1
             block_start = block_num * self.block_size
 
+            print("getting data", url, block_start, block_start + self.block_size - 1)
             block_data = self.fetcher.get_data(
                 url, block_start, block_start + self.block_size - 1
             )
