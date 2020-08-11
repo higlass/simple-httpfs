@@ -13,5 +13,5 @@ setup(
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     install_requires=["boto3", "diskcache", "fusepy", "requests", "slugid", "tenacity"],
-    version="0.4.5",
+    version="0.4.6",
 )
