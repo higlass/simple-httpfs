@@ -406,6 +406,7 @@ class HttpFs(LoggingMixIn, Operations):
             self.lru_misses += 1
 
             if cache_key in self.disk_cache:
+                self.logger.info("cache hit: %s", cache_key)
                 try:
                     block_data = self.disk_cache[cache_key]
                     self.disk_hits += 1
@@ -417,7 +418,7 @@ class HttpFs(LoggingMixIn, Operations):
             self.disk_misses += 1
             block_start = block_num * self.block_size
 
-            print("getting data", url, block_start, block_start + self.block_size - 1)
+            self.logger.info("getting data %s", cache_key)
             block_data = self.fetcher.get_data(
                 url, block_start, block_start + self.block_size - 1
             )
