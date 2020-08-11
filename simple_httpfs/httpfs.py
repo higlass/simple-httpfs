@@ -221,6 +221,8 @@ class HttpFs(LoggingMixIn, Operations):
         if not self.logger:
             self.logger = logging.getLogger(__name__)
 
+        self.logger.info("Starting with disk_cache_size: %d", disk_cache_size)
+
         if schema == "http" or schema == "https":
             self.fetcher = HttpFetcher(self.logger)
         elif schema == "ftp":
