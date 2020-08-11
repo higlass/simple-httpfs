@@ -232,7 +232,7 @@ class HttpFs(LoggingMixIn, Operations):
         else:
             raise ("Unknown schema: {}".format(schema))
 
-        self.disk_cache = dc.Cache(disk_cache_dir, disk_cache_size)
+        self.disk_cache = dc.Cache(disk_cache_dir, size_limit=disk_cache_size)
 
         self.total_blocks = 0
         self.lru_hits = 0
