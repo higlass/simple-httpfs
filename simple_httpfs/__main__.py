@@ -46,6 +46,12 @@ def main():
         '--aws-profile',
         default=None,
         type=str)
+    
+    parser.add_argument(
+        '--allow-other',
+        action='store_true',
+        default=False,
+        help='Allow other users to access this fuse')
 
     parser.add_argument(
         '-l', '--log',
@@ -84,9 +90,11 @@ Mounting HTTP Filesystem...
     schema: {schema}
     mountpoint: {mountpoint}
     foreground: {foreground}
+    allow others: {allow_other}
 """.format(schema=schema,
            mountpoint=args['mountpoint'],
-           foreground=args['foreground'])
+           foreground=args['foreground'],
+           allow_other=args['allow_other'])
     print(start_msg, file=sys.stderr)
 
     fuse = FUSE(
@@ -100,7 +108,8 @@ Mounting HTTP Filesystem...
                logger = logger
             ),
         args['mountpoint'],
-        foreground=args['foreground']
+        foreground=args['foreground'],
+        allow_other=args['allow_other']
     )
 
 
