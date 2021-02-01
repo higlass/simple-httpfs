@@ -1,5 +1,7 @@
 # simple-httpfs
 
+[![PyPI](https://img.shields.io/pypi/v/simple-httpfs.svg?logo=python&logoColor=white)](https://pypi.org/project/simple-httpfs/)
+
 A simple FUSE-based http file system. Read http files as if they were on
 the local filesystem.
 
