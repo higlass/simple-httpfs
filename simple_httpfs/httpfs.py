@@ -1,28 +1,25 @@
 import collections
 import logging
-import numpy as np
 import os
 import os.path as op
-import requests
+import re
 import sys
 import traceback
-import re
 from errno import EIO, ENOENT
+from ftplib import FTP
 from stat import S_IFDIR, S_IFREG
 from threading import Timer
-from tenacity import retry, wait_exponential
-
-from time import sleep
-from time import time
+from time import sleep, time
+from urllib.parse import urlparse
 
 import boto3
-
-from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 import diskcache as dc
+import numpy as np
+import requests
+from fuse import FUSE, FuseOSError, LoggingMixIn, Operations
+from tenacity import retry, wait_exponential
 
 import slugid
-from ftplib import FTP
-from urllib.parse import urlparse
 
 CLEANUP_INTERVAL = 60
 CLEANUP_EXPIRED = 60
@@ -149,10 +146,9 @@ class HttpFetcher:
     @retry(wait=wait_exponential(multiplier=1, min=4, max=10))
     def get_data(self, url, start, end):
         headers = {"Range": "bytes={}-{}".format(start, end), "Accept-Encoding": ""}
-        self.logger.info("gettings %s %s %s", url, start, end)
+        self.logger.info("getting %s %s %s", url, start, end)
         r = requests.get(url, headers=headers)
         self.logger.info("got %s", r.status_code)
-        print("got", r.status_code)
         r.raise_for_status()
         block_data = np.frombuffer(r.content, dtype=np.uint8)
         return block_data
@@ -323,58 +319,56 @@ class HttpFs(LoggingMixIn, Operations):
             pass
         try:
             self.total_requests += 1
-            if path in self.lru_attrs:
-                url = "{}:/{}".format(self.schema, path[:-2])
 
-                self.logger.debug("read url: {}".format(url))
-                self.logger.debug(
-                    "offset: {} - {} request_size (KB): {:.2f} block: {}".format(
-                        offset,
-                        offset + size - 1,
-                        size / 2 ** 10,
-                        offset // self.block_size,
-                    )
+            attr = self.getattr(path)
+            url = "{}:/{}".format(self.schema, path[:-2])
+
+            self.logger.debug("read url: {}".format(url))
+            self.logger.debug(
+                "offset: {} - {} request_size (KB): {:.2f} block: {}".format(
+                    offset,
+                    offset + size - 1,
+                    size / 2 ** 10,
+                    offset // self.block_size,
                 )
-                output = np.zeros((size,), np.uint8)
+            )
+            output = np.zeros((size,), np.uint8)
 
-                t1 = time()
+            t1 = time()
 
-                # nothing fetched yet
-                last_fetched = -1
-                curr_start = offset
+            # nothing fetched yet
+            last_fetched = -1
+            curr_start = offset
 
-                while last_fetched < offset + size:
-                    block_num = curr_start // self.block_size
-                    block_start = self.block_size * (curr_start // self.block_size)
+            while last_fetched < offset + size:
+                block_num = curr_start // self.block_size
+                block_start = self.block_size * (curr_start // self.block_size)
 
-                    block_id = (url, block_num)
-                    while block_id in self.getting:
-                        sleep(0.05)
+                block_id = (url, block_num)
+                while block_id in self.getting:
+                    sleep(0.05)
 
-                    self.getting.add(block_id)
-                    block_data = self.get_block(url, block_num)
-                    self.getting.remove(block_id)
+                self.getting.add(block_id)
+                block_data = self.get_block(url, block_num)
+                self.getting.remove(block_id)
 
-                    data_start = (
-                        curr_start - (curr_start // self.block_size) * self.block_size
-                    )
+                data_start = (
+                    curr_start - (curr_start // self.block_size) * self.block_size
+                )
 
-                    data_end = min(self.block_size, offset + size - block_start)
-                    data = block_data[data_start:data_end]
+                data_end = min(self.block_size, offset + size - block_start)
+                data = block_data[data_start:data_end]
 
-                    d_start = curr_start - offset
-                    output[d_start : d_start + len(data)] = data
+                d_start = curr_start - offset
+                output[d_start : d_start + len(data)] = data
 
-                    last_fetched = curr_start + (data_end - data_start)
-                    curr_start += data_end - data_start
+                last_fetched = curr_start + (data_end - data_start)
+                curr_start += data_end - data_start
 
-                bts = bytes(output)
+            bts = bytes(output)
 
-                return bts
+            return bts
 
-            else:
-                logging.info("file not found: {}".format(path))
-                raise FuseOSError(EIO)
         except Exception as ex:
             self.logger.exception(ex)
             raise

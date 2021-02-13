@@ -1,12 +1,15 @@
-import os.path as op
 import argparse
 import logging
+import os.path as op
 import sys
+
 from fuse import FUSE
+
 from .httpfs import HttpFs
 
 
 def main():
+    print("yo yo yo")
     parser = argparse.ArgumentParser(
         description="""usage: simple-httpfs <mountpoint>""")
 

@@ -3,6 +3,7 @@ notebooks
 *.un~
 *.swp
 *.swo
+*.swn
 *.egg-info/
 __pycache__/
 .py[cod]
