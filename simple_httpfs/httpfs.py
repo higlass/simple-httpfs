@@ -17,7 +17,13 @@ import diskcache as dc
 import numpy as np
 import requests
 from fuse import FUSE, FuseOSError, LoggingMixIn, Operations
-from tenacity import retry, wait_exponential
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    wait_fixed,
+    wait_random,
+)
 
 import slugid
 
@@ -112,6 +118,11 @@ class FtpFetcher:
         return np.array(data, dtype=np.uint8)
 
 
+def is_403(value):
+    """Return True if the error is a 403 exception"""
+    return value is not None
+
+
 class HttpFetcher:
     SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
 
@@ -143,12 +154,13 @@ class HttpFetcher:
             self.logger.error(traceback.format_exc())
             raise FuseOSError(ENOENT)
 
-    @retry(wait=wait_exponential(multiplier=1, min=4, max=10))
+    @retry(wait=wait_fixed(1) + wait_random(0, 2), stop=stop_after_attempt(2))
     def get_data(self, url, start, end):
         headers = {"Range": "bytes={}-{}".format(start, end), "Accept-Encoding": ""}
         self.logger.info("getting %s %s %s", url, start, end)
         r = requests.get(url, headers=headers)
         self.logger.info("got %s", r.status_code)
+
         r.raise_for_status()
         block_data = np.frombuffer(r.content, dtype=np.uint8)
         return block_data
@@ -302,7 +314,7 @@ class HttpFs(LoggingMixIn, Operations):
     def read(self, path, size, offset, fh):
         t1 = time()
 
-        # print("read %s %s %s", path, offset, size)
+        self.logger.debug("read %s %s %s", path, offset, size)
 
         if t1 - self.last_report_time > REPORT_INTERVAL:
             """
