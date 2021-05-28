@@ -9,7 +9,6 @@ from .httpfs import HttpFs
 
 
 def main():
-    print("yo yo yo")
     parser = argparse.ArgumentParser(
         description="""usage: simple-httpfs <mountpoint>"""
     )
