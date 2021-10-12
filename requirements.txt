@@ -1,0 +1,8 @@
+boto3
+diskcache
+numpy
+certifi
+idna
+fusepy
+tenacity
+slugid
