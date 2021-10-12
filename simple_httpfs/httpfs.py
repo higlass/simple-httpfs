@@ -136,6 +136,7 @@ class HttpFetcher:
             )
 
     def get_size(self, url):
+        # TODO avoid try/except, use "if key in dict"
         try:
             head = requests.head(url, allow_redirects=True, verify=self.SSL_VERIFY)
             return int(head.headers["Content-Length"])
@@ -146,6 +147,9 @@ class HttpFetcher:
                 verify=self.SSL_VERIFY,
                 headers={"Range": "bytes=0-1"},
             )
+            if "Content-Length" in head.headers:
+                # google server sends Content-Length on head request 2
+                return int(head.headers["Content-Length"])
             crange = head.headers["Content-Range"]
             match = re.search(r"/(\d+)$", crange)
             if match:
