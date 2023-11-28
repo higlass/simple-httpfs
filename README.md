@@ -19,3 +19,14 @@ httpfs](https://github.com/danielrozenberg/httpfs).
 ```
 umount /my/mount/dir
 ```
+
+
+## Local development
+
+```
+git clone https://github.com/higlass/simple-httpfs.git
+cd simple-httpfs
+pip install .
+# To run the test script
+bash test.sh
+```
