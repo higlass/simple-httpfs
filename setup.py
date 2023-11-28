@@ -12,6 +12,6 @@ setup(
     license="MIT",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    install_requires=["boto3", "diskcache", "fusepy", "requests", "slugid", "tenacity"],
+    install_requires=["boto3", "diskcache", "fusepy", "requests", "slugid", "tenacity", "numpy"],
     version="0.4.12",
 )
