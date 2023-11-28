@@ -1,19 +1,22 @@
-DIR=x11
-umount /tmp/$DIR/https
-python simple_httpfs/simple-httpfs.py /tmp/$DIR/https
 
-cat /tmp/${DIR}/https/s3.amazonaws.com/pkerp/public/tiny.txt..
+# This is the directory where the filesystem will be mounted
+DIR=media
 
+# Create the folder if it doesn't exist
+if [ ! -d "$DIR" ]; then
+    mkdir "$DIR"
+fi
+
+if [ ! -d "$DIR/https" ]; then
+    mkdir "$DIR/https"
+fi
+
+# Unmount and mount the filesystem
 umount $DIR/https
-python simple_httpfs/simple-httpfs.py $DIR/https
+simple-httpfs media/https  --schema https
 
-cat $DIR/https/s3.amazonaws.com/pkerp/public/tiny.txt..
+# This is a lorem ipsum text. It is used to test the filesystem
+cat $DIR/https/s3.amazonaws.com/pkerp/public/tiny.txt.. 
 
-umount /tmp/$DIR/https
+# Unmount the filesystem since we are done
 umount $DIR/https
-
-python simple_httpfs/simple-httpfs.py $DIR/http
-
-head $DIR/http/hgdownload.cse.ucsc.edu/goldenpath/hg19/encodeDCC/wgEncodeSydhTfbs/wgEncodeSydhTfbsGm12878InputStdSig.bigWig..
-
-umount $DIR/http
