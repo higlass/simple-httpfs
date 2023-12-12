@@ -13,7 +13,7 @@ fi
 
 # Unmount and mount the filesystem
 umount $DIR/https
-simple-httpfs media/https  --schema https
+simple-httpfs $DIR/https  --schema https
 
 # This is a lorem ipsum text. It is used to test the filesystem
 cat $DIR/https/s3.amazonaws.com/pkerp/public/tiny.txt.. 
