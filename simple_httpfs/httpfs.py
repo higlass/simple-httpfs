@@ -137,7 +137,7 @@ class HttpFetcher:
 
     def get_size(self, url):
         try:
-            head = requests.head(url, allow_redirects=True, verify=self.SSL_VERIFY)
+            head = requests.head(url, headers={"Accept-Encoding": ""}, allow_redirects=True, verify=self.SSL_VERIFY)
             return int(head.headers["Content-Length"])
         except:
             head = requests.get(
