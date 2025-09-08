@@ -1,2 +1,0 @@
-include versioneer.py
-include simple_httpfs/_version.py

@@ -1,435 +1,424 @@
-import collections
+from __future__ import annotations
+
 import logging
-import os
-import os.path as op
-import re
-import sys
-import traceback
-from errno import EIO, ENOENT
-from ftplib import FTP
+import posixpath as pp
+from errno import EACCES, EIO, ENOENT
 from stat import S_IFDIR, S_IFREG
-from threading import Timer
-from time import sleep, time
+from time import time
+from typing import TYPE_CHECKING, Any, TypedDict
 from urllib.parse import urlparse
 
-import boto3
-import diskcache as dc
-import numpy as np
-import requests
-from fuse import FUSE, FuseOSError, LoggingMixIn, Operations
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    wait_fixed,
-    wait_random,
-)
+import obspec.exceptions
+import obstore
+from diskcache import Cache as DiskCache
+from fuse import FuseOSError, LoggingMixIn, Operations
+from obspec.exceptions import map_exception
 
-import slugid
+from ._caching import CachedStore, CacheMonitor, LRUCache, Store
+from ._ftp import FTPStore
 
-CLEANUP_INTERVAL = 60
-CLEANUP_EXPIRED = 60
+if TYPE_CHECKING:
+    try:
+        from collections.abc import Buffer
+    except ImportError:
+        from typing_extensions import Buffer
 
-REPORT_INTERVAL = 60
-
-DISK_CACHE_SIZE_ENV = "HTTPFS_DISK_CACHE_SIZE"
-DISK_CACHE_DIR_ENV = "HTTPFS_DISK_CACHE_DIR"
-
-
-FALSY = {0, "0", False, "false", "False", "FALSE", "off", "OFF"}
-
-
-class LRUCache:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.cache = collections.OrderedDict()
-
-    def __getitem__(self, key):
-        value = self.cache.pop(key)
-        self.cache[key] = value
-        return value
-
-    def __setitem__(self, key, value):
-        try:
-            self.cache.pop(key)
-        except KeyError:
-            if len(self.cache) >= self.capacity:
-                self.cache.popitem(last=False)
-        self.cache[key] = value
-
-    def __contains__(self, key):
-        return key in self.cache
-
-    def __len__(self):
-        return len(self.cache)
+    from obstore.store import (
+        AzureConfig,
+        AzureCredentialProvider,
+        ClientConfig,
+        GCSConfig,
+        GCSCredentialProvider,
+        RetryConfig,
+        S3Config,
+        S3CredentialProvider,
+    )
 
 
-class FtpFetcher:
-    def server_path(self, url):
-        o = urlparse(url)
+class StoreConfigDict(TypedDict, total=False):
+    s3: S3Config
+    gcs: GCSConfig
+    azure: AzureConfig
 
-        return (o.netloc, o.path)
 
-    def login(self, server):
-        ftp = FTP(server)
-        ftp.login()
+class CredentialProviderDict(TypedDict, total=False):
+    s3: S3CredentialProvider
+    gcs: GCSCredentialProvider
+    azure: AzureCredentialProvider
 
-        try:
-            # do a retrbinary on a non-existent file
-            # to set the transfer mode to binary
-            # use a dummy callback too
-            ftp.retrbinary(slugid.nice(), lambda x: x + 1)
-        except:
-            pass
 
-        return ftp
+def path_to_url(path: str, sentinel: str) -> str | None:
+    if path == "/" or not path.endswith(sentinel):
+        return None
 
-    def get_size(self, url):
-        (server, path) = self.server_path(url)
+    # Repeated slashes were already removed
+    scheme, path = path.split(":/", 1)
+    scheme = scheme.lstrip("/")
+    path = (
+        path.replace(
+            f"{sentinel}/", "/"
+        ).rstrip(  # Remove sentinels from any "parent dirs"
+            sentinel
+        )  # Remove trailing sentinel
+    )
+    path = pp.normpath(path)
 
-        ftp = self.login(server)
-        size = ftp.size(path)
-        ftp.close()
-        return size
+    return f"{scheme}://{path}"
 
-    def get_data(self, url, start, end):
-        import time
 
-        (server, path) = self.server_path(url)
-        ftp = self.login(server)
-        conn = ftp.transfercmd("RETR {}".format(path), rest=start)
+def load_store(
+    url: str,
+    *,
+    configs: StoreConfigDict | None = None,
+    credential_providers: CredentialProviderDict | None = None,
+    client_options: ClientConfig | None = None,
+    retry_config: RetryConfig | None = None,
+) -> Store:
+    try:
+        scheme: str = obstore.parse_scheme(url)
+    except Exception:
+        scheme = urlparse(url).scheme
 
-        amt = end - start
-        chunk_size = 1 << 15
-        data = []
-        while len(data) < amt:
-            chunk = conn.recv(chunk_size)
-            if chunk:
-                data += chunk
+    config: S3Config | GCSConfig | AzureConfig | None
+    match scheme:
+        case "ftp":
+            return FTPStore(url)
+        case "http" | "https":
+            client_options = (client_options or {}).copy()
+            client_options.setdefault("allow_http", True)
+            return obstore.store.HTTPStore(
+                url, client_options=client_options, retry_config=retry_config
+            )
+        case "s3" | "gcs" | "azure":
+            if configs and scheme in configs:
+                config = configs[scheme]
             else:
-                break
-        if len(data) < amt:
-            data += [0] * (amt - len(data))
-        else:
-            data = data[:amt]
-
-        ftp.close()
-        t2 = time.time()
-        return np.array(data, dtype=np.uint8)
-
-
-def is_403(value):
-    """Return True if the error is a 403 exception"""
-    return value is not None
-
-
-class HttpFetcher:
-    SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
-
-    def __init__(self, logger):
-        self.logger = logger
-        if not self.SSL_VERIFY:
-            logger.warning(
-                "You have set ssl certificates to not be verified. "
-                "This may leave you vulnerable. "
-                "http://docs.python-requests.org/en/master/user/advanced/#ssl-cert-verification"
-            )
-
-    def get_size(self, url):
-        try:
-            head = requests.head(url, allow_redirects=True, verify=self.SSL_VERIFY)
-            return int(head.headers["Content-Length"])
-        except:
-            head = requests.get(
+                config = {"skip_signature": True}
+            if credential_providers and scheme in credential_providers:
+                credential_provider = credential_providers[scheme]
+            else:
+                credential_provider = None
+            return obstore.store.from_url(
                 url,
-                allow_redirects=True,
-                verify=self.SSL_VERIFY,
-                headers={"Range": "bytes=0-1"},
+                config=config,  # type: ignore
+                client_options=client_options,
+                retry_config=retry_config,
+                credential_provider=credential_provider,  # type: ignore
             )
-            crange = head.headers["Content-Range"]
-            match = re.search(r"/(\d+)$", crange)
-            if match:
-                return int(match.group(1))
-
-            self.logger.error(traceback.format_exc())
-            raise FuseOSError(ENOENT)
-
-    @retry(wait=wait_fixed(1) + wait_random(0, 2), stop=stop_after_attempt(2))
-    def get_data(self, url, start, end):
-        headers = {"Range": "bytes={}-{}".format(start, end), "Accept-Encoding": ""}
-        self.logger.info("getting %s %s %s", url, start, end)
-        r = requests.get(url, headers=headers)
-        self.logger.info("got %s", r.status_code)
-
-        r.raise_for_status()
-        block_data = np.frombuffer(r.content, dtype=np.uint8)
-        return block_data
+        case _:
+            return obstore.store.from_url(url)
 
 
-class S3Fetcher:
-    SSL_VERIFY = os.environ.get("SSL_VERIFY", True) not in FALSY
-
-    def __init__(self, aws_profile, logger):
-        self.logger = logger
-        self.logger.info("Creating S3Fetcher with aws_profile=%s", aws_profile)
-        self.session = boto3.Session(profile_name=aws_profile)
-        self.client = self.session.client("s3")
-        pass
-
-    def parse_bucket_key(self, url):
-        url_parts = urlparse(url, allow_fragments=False)
-        bucket = url_parts.netloc
-        key = url_parts.path.strip("/")
-
-        return bucket, key
-
-    def get_size(self, url):
-        bucket, key = self.parse_bucket_key(url)
-
-        response = self.client.head_object(Bucket=bucket, Key=key)
-        size = response["ContentLength"]
-        return size
-
-    @retry(wait=wait_exponential(multiplier=1, min=4, max=10))
-    def get_data(self, url, start, end):
-        bucket, key = self.parse_bucket_key(url)
-        obj = boto3.resource("s3").Object(bucket, key)
-        stream = self.client.get_object(
-            Bucket=bucket, Key=key, Range="bytes={}-{}".format(start, end)
-        )["Body"]
-        contents = stream.read()
-        block_data = np.frombuffer(contents, dtype=np.uint8)
-        return block_data
-
-
-class HttpFs(LoggingMixIn, Operations):
+class HttpFs(LoggingMixIn, Operations):  # type: ignore[misc]
     """
-    A read only http/https/ftp filesystem.
-
+    A read-only http(s)/ftp/object storage filesystem for FUSE.
     """
 
     def __init__(
         self,
-        schema,
-        disk_cache_size=2 ** 30,
-        disk_cache_dir="/tmp/xx",
-        lru_capacity=400,
-        block_size=2 ** 20,
-        aws_profile=None,
-        logger=None,
+        sentinel: str = "...",
+        block_size: int = 2**20,
+        disk_cache_size: int = 2**30,
+        disk_cache_dir: str = "/tmp/xx",
+        lru_capacity: int = 400,
+        store_configs: StoreConfigDict | None = None,
+        credential_providers: CredentialProviderDict | None = None,
+        client_options: ClientConfig | None = None,
+        retry_config: RetryConfig | None = None,
+        logger: logging.Logger | None = None,
     ):
-        self.lru_cache = LRUCache(capacity=lru_capacity)
-        self.lru_attrs = LRUCache(capacity=lru_capacity)
-        self.schema = schema
-        self.logger = logger
-        self.last_report_time = 0
-        self.total_requests = 0
-        self.getting = set()
+        """
+        Initialize a filesystem.
 
-        if not self.logger:
+        Parameters
+        ----------
+        sentinel : str
+            The terminal sentinel string to identify paths as URLs. See notes.
+        block_size : int
+            The block size to use for reads and writes.
+        disk_cache_size : int
+            The size of the disk cache to use.
+        disk_cache_dir : str
+            The directory to use for the disk cache.
+        lru_capacity : int
+            The capacity of the LRU cache.
+        store_configs : dict[str, dict] | None
+            Configuration options for different object store schemes. Each key
+            is the scheme name, and the value is a typed dict of configuration
+            options for that scheme. See the obstore documentation for details.
+        credential_provider : dict[str, Callable] | None
+            Credential providers for different object store schemes. Each key
+            is the scheme name, and the value is a callback that returns
+            credentials. See the obstore documentation for details.
+        client_options : dict | None
+            Configuration options for the HTTP client if supported.
+        retry_config : dict | None
+            Configuration options for the retry mechanism if supported.
+        logger : logging.Logger | None
+            The logger to use for logging.
+
+        Notes
+        -----
+        For a given path, the kernel will traverse its ``/``-based hierarchy
+        and call ``getattr`` on each component. If any component of the path is
+        not detected by the filesystem, the entire lookup will fail. Therefore,
+        for this filesystem to properly recognize a URI, each component of its
+        path needs to be interpreted as a directory, but the full URI needs to
+        be interpreted as a file. To accomplish this, the end of a qualified
+        URI is signalled by the presence of a trailing *sentinel* string.
+        """
+        self.logger: logging.Logger
+        if not logger:
             self.logger = logging.getLogger(__name__)
-
-        self.logger.info("Starting with disk_cache_size: %d", disk_cache_size)
-
-        if schema == "http" or schema == "https":
-            self.fetcher = HttpFetcher(self.logger)
-        elif schema == "ftp":
-            self.fetcher = FtpFetcher()
-        elif schema == "s3":
-            self.fetcher = S3Fetcher(aws_profile, self.logger)
         else:
-            raise ("Unknown schema: {}".format(schema))
+            self.logger = logger
+        self.logger.info(f"Starting with disk_cache_size: {disk_cache_size}")
 
-        self.disk_cache = dc.Cache(disk_cache_dir, size_limit=disk_cache_size)
+        self.sentinel: str = sentinel
+        self.meta_cache: LRUCache[str, Any] = LRUCache(capacity=lru_capacity)
+        self.mem_cache: LRUCache[str, Any] = LRUCache(capacity=lru_capacity)
+        self.disk_cache: DiskCache = DiskCache(
+            disk_cache_dir, size_limit=disk_cache_size
+        )
+        self.block_size: int = block_size
+        self.cache_monitor: CacheMonitor = CacheMonitor()
 
-        self.total_blocks = 0
-        self.lru_hits = 0
-        self.lru_misses = 0
+        self.store_configs: StoreConfigDict | None = store_configs or {}
+        self.credential_providers: CredentialProviderDict | None = (
+            credential_providers or {}
+        )
+        self.client_options: ClientConfig | None = client_options
+        self.retry_config: RetryConfig | None = retry_config
 
-        self.disk_hits = 0
-        self.disk_misses = 0
-        self.block_size = block_size
+    def _load_cached_store(self, url: str) -> CachedStore:
+        """
+        Load a store from a URL.
+        """
+        if "://" not in url:
+            raise FuseOSError(ENOENT)
 
-    def getSize(self, url):
+        store = load_store(
+            url,
+            configs=self.store_configs,
+            credential_providers=self.credential_providers,
+            client_options=self.client_options,
+            retry_config=self.retry_config,
+        )
+
+        return CachedStore(
+            store,
+            base_url=url,
+            meta_cache=self.meta_cache,
+            mem_cache=self.mem_cache,
+            disk_cache=self.disk_cache,
+            block_size=self.block_size,
+            cache_monitor=self.cache_monitor,
+        )
+
+    def getattr(self, path: str, fh: Any = None) -> dict[str, Any]:
+        """
+        Return an attribute dictionary for the given path.
+
+        If the sentinel string is missing, the path is interpreted as an
+        empty directory.
+
+        Parameters
+        ----------
+        path : str
+            The URI, unix-normalized as a path. If the sentinel string is
+            missing, the path is interpreted as an empty directory.
+        fh : Any
+            File handle (not used).
+
+        Returns
+        -------
+        dict[str, Any]
+            The attribute dictionary for the given path. It has keys identical
+            to the stat C structure of stat(2).
+
+        Notes
+        -----
+        ``st_atime``, ``st_mtime`` and ``st_ctime`` should be unix timestamps
+        (floats).
+        """
+        url = path_to_url(path, self.sentinel)
+        if url is None:
+            return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+
+        store = self._load_cached_store(url)
+
+        self.logger.info(f"getattr: HEAD: {url}")
         try:
-            return self.fetcher.get_size(url)
-        except Exception as ex:
-            self.logger.exception(ex)
-            raise
-
-    def getattr(self, path, fh=None):
-        try:
-            if path in self.lru_attrs:
-                return self.lru_attrs[path]
-
-            if path == "/":
-                self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
-                return self.lru_attrs[path]
-
-            if (
-                path[-2:] != ".."
-                and not path.endswith("..-journal")
-                and not path.endswith("..-wal")
-            ):
+            metadata = store.head("")
+        except Exception as e:
+            mapped_exc = map_exception(e)
+            if isinstance(mapped_exc, obspec.exceptions.NotFoundError):
                 return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
 
-            url = "{}:/{}".format(self.schema, path[:-2])
-
-            # there's an exception for the -jounral files created by SQLite
-            if not path.endswith("..-journal") and not path.endswith("..-wal"):
-                size = self.getSize(url)
+            self.logger.error(f"getattr: HEAD: {e}")
+            if isinstance(
+                mapped_exc,
+                obspec.exceptions.PermissionDeniedError
+                | obspec.exceptions.UnauthenticatedError,
+            ):
+                raise FuseOSError(EACCES) from e
+            elif isinstance(
+                mapped_exc,
+                obspec.exceptions.InvalidPathError
+                | obspec.exceptions.NotSupportedError,
+            ):
+                raise FuseOSError(ENOENT) from e
             else:
-                size = 0
+                raise FuseOSError(EIO) from e
 
-            # logging.info("head: {}".format(head.headers))
-            # logging.info("status_code: {}".format(head.status_code))
-            # print("url:", url, "head.url", head.url)
+        # Cached directories marked as None
+        if metadata is None:
+            return dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
 
-            if size is not None:
-                self.lru_attrs[path] = dict(
-                    st_mode=(S_IFREG | 0o644),
-                    st_nlink=1,
-                    st_size=size,
-                    st_ctime=time(),
-                    st_mtime=time(),
-                    st_atime=time(),
-                )
-            else:
-                self.lru_attrs[path] = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
+        now = time()
+        timestamp = (
+            metadata["last_modified"].timestamp()
+            if "last_modified" in metadata
+            else now
+        )
+        return dict(
+            st_mode=(S_IFREG | 0o644),
+            st_nlink=1,
+            st_size=metadata["size"],
+            st_ctime=timestamp,
+            st_mtime=timestamp,
+            st_atime=now,
+        )
 
-            return self.lru_attrs[path]
-        except Exception as ex:
-            self.logger.exception(ex)
-            raise
+    def readdir(self, path: str, fh: Any = None) -> list[str]:
+        """
+        Return a list of files in the directory.
 
-    def unlink(self, path):
-        return 0
+        Parameters
+        ----------
+        path : str
+            The URI, unix-normalized as a path. If the sentinel string is
+            missing, the path is interpreted as an empty directory.
+        fh : Any
+            File handle (not used).
 
-    def create(self, path, mode, fi=None):
-        return 0
+        Returns
+        -------
+        list[str]
+            A list of contents of the "directory", including sentinel strings.
+        """
+        url = path_to_url(path, self.sentinel)
+        if url is None:
+            return [".", ".."]
 
-    def write(self, path, buf, size, offset, fip):
-        return 0
+        store = self._load_cached_store(url)
 
-    def read(self, path, size, offset, fh):
-        t1 = time()
-
-        self.logger.debug("read %s %s %s", path, offset, size)
-
-        if t1 - self.last_report_time > REPORT_INTERVAL:
-            """
-            self.logger.info(
-                "lru hits: {} lru misses: {} disk hits: {} total_requests: {}".format(
-                    self.lru_hits,
-                    self.lru_misses,
-                    self.disk_hits,
-                    self.disk_misses,
-                    self.total_requests,
-                )
-            )
-            """
-            pass
+        self.logger.info(f"readdir: LIST_WITH_DELIMITER: {url}")
         try:
-            self.total_requests += 1
+            result = store.list_with_delimiter()
+        except Exception as e:
+            self.logger.error(f"readdir: LIST_WITH_DELIMITER: {e}")
+            mapped_exc = map_exception(e)
+            if isinstance(mapped_exc, obspec.exceptions.NotFoundError):
+                return [".", ".."]  # Return empty directory for not found
+            elif isinstance(
+                mapped_exc,
+                obspec.exceptions.PermissionDeniedError
+                | obspec.exceptions.UnauthenticatedError,
+            ):
+                raise FuseOSError(EACCES) from e
+            else:
+                raise FuseOSError(EIO) from e
 
-            attr = self.getattr(path)
-            url = "{}:/{}".format(self.schema, path[:-2])
+        dirs = [(item + self.sentinel) for item in result["common_prefixes"]]
+        # Mark directories as seen by caching None
+        for dir in result["common_prefixes"]:
+            cache_key = store._meta_cache_key(dir)
+            if cache_key not in self.meta_cache:
+                self.meta_cache[cache_key] = None
 
-            self.logger.debug("read url: {}".format(url))
-            self.logger.debug(
-                "offset: {} - {} request_size (KB): {:.2f} block: {}".format(
-                    offset,
-                    offset + size - 1,
-                    size / 2 ** 10,
-                    offset // self.block_size,
-                )
-            )
-            output = np.zeros((size,), np.uint8)
+        files = [(item["path"] + self.sentinel) for item in result["objects"]]
+        # Cache file metadata for all objects seen in listing
+        for item in result["objects"]:
+            cache_key = store._meta_cache_key(item["path"])
+            if cache_key not in self.meta_cache:
+                self.meta_cache[cache_key] = item
 
-            t1 = time()
+        return [".", "..", *dirs, *files]
 
-            # nothing fetched yet
-            last_fetched = -1
-            curr_start = offset
+    def read(self, path: str, size: int, offset: int, fh: Any = None) -> Buffer | bytes:
+        """
+        Return a byte string containing the data requested.
 
-            while last_fetched < offset + size:
-                block_num = curr_start // self.block_size
-                block_start = self.block_size * (curr_start // self.block_size)
+        Parameters
+        ----------
+        path : str
+            The URI, unix-normalized as a path. If the sentinel string is
+            missing, the path is interpreted as an empty directory.
+        size : int
+            The number of bytes to read.
+        offset : int
+            The offset to start reading from.
+        fh : Any
+            File handle (not used).
 
-                block_id = (url, block_num)
-                while block_id in self.getting:
-                    sleep(0.05)
+        Returns
+        -------
+        Buffer | bytes
+            The requested data.
+        """
+        url = path_to_url(path, self.sentinel)
+        if url is None:
+            return b""
 
-                self.getting.add(block_id)
-                block_data = self.get_block(url, block_num)
-                self.getting.remove(block_id)
+        store = self._load_cached_store(url)
 
-                data_start = (
-                    curr_start - (curr_start // self.block_size) * self.block_size
-                )
+        self.logger.debug(
+            f"read: GET_RANGE: {url}\n"
+            f"range: {offset} - {offset + size - 1}\n"
+            f"request_size (KB): {size / 1024:.2f}\n"
+        )
+        try:
+            return store.get_range(url, start=offset, length=size)
+        except Exception as e:
+            self.logger.error(f"read: GET_RANGE: {e}")
+            mapped_exc = map_exception(e)
+            if isinstance(mapped_exc, obspec.exceptions.NotFoundError):
+                raise FuseOSError(ENOENT) from e
+            elif isinstance(
+                mapped_exc,
+                obspec.exceptions.PermissionDeniedError
+                | obspec.exceptions.UnauthenticatedError,
+            ):
+                raise FuseOSError(EACCES) from e
+            else:
+                raise FuseOSError(EIO) from e
 
-                data_end = min(self.block_size, offset + size - block_start)
-                data = block_data[data_start:data_end]
+    def link(self, target: str, source: str) -> None: ...
 
-                d_start = curr_start - offset
-                output[d_start : d_start + len(data)] = data
+    def symlink(self, target: str, source: str) -> None: ...
 
-                last_fetched = curr_start + (data_end - data_start)
-                curr_start += data_end - data_start
+    def unlink(self, path: str) -> None: ...
 
-            bts = bytes(output)
+    def write(self, path: str, buf: bytes, size: int, offset: int, fip: Any) -> int:
+        return 0
 
-            return bts
+    def statfs(self, path: str) -> dict[str, int]:
+        """
+        Some fake facts about the filesystem.
+        """
+        fs_block_size = 128 * 1024
+        return dict(
+            f_frsize=fs_block_size,  # fundamental block size
+            f_bsize=fs_block_size,  # preferred block size
+            f_blocks=1024 * 1024,  # pretend total capacity (in blocks)
+            f_bfree=512 * 1024,  # half free for root
+            f_bavail=512 * 1024,  # same for non-root
+            f_namemax=8192,  # maximum filename length (in chars)
+        )
 
-        except Exception as ex:
-            self.logger.exception(ex)
-            raise
-
-    def destroy(self, path):
+    def destroy(self, path: str) -> None:
+        """
+        Called on filesystem destruction. Path is always `/`.
+        """
         self.disk_cache.close()
-
-    def get_block(self, url, block_num):
-        """
-        Get a data block from a URL. Blocks are 256K bytes in size
-
-        Parameters:
-        -----------
-        url: string
-            The url of the file we want to retrieve a block from
-        block_num: int
-            The # of the 256K'th block of this file
-        """
-        cache_key = "{}.{}.{}".format(url, self.block_size, block_num)
-        cache = self.disk_cache
-
-        self.total_blocks += 1
-
-        if cache_key in self.lru_cache:
-            self.lru_hits += 1
-            hit = self.lru_cache[cache_key]
-            return hit
-        else:
-            self.lru_misses += 1
-
-            if cache_key in self.disk_cache:
-                self.logger.info("cache hit: %s", cache_key)
-                try:
-                    block_data = self.disk_cache[cache_key]
-                    self.disk_hits += 1
-                    self.lru_cache[cache_key] = block_data
-                    return block_data
-                except KeyError:
-                    pass
-
-            self.disk_misses += 1
-            block_start = block_num * self.block_size
-
-            self.logger.info("getting data %s", cache_key)
-            block_data = self.fetcher.get_data(
-                url, block_start, block_start + self.block_size - 1
-            )
-
-            self.lru_cache[cache_key] = block_data
-            self.disk_cache[cache_key] = block_data
-
-        return block_data

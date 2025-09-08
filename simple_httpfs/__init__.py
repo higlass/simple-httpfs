@@ -1,3 +1,9 @@
+from importlib.metadata import version
+
 from .httpfs import HttpFs
 
-__version__ = "0.4.12"
+__version__ = version("simple-httpfs")
+
+__all__ = ["HttpFs", "__version__"]
+
+del version

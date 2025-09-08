@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "simple-httpfs"
+version = "0.5.0"
+description = "A simple FUSE filesystem for reading http files"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Peter Kerpedjiev", email = "pkerpedjiev@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "diskcache",
+    "fusepy",
+    "obstore",
+    "obspec",
+    "typing-extensions; python_version < '3.12'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.0",
+    "pytest>=6.0",
+    "pytest-cov",
+    "ruff>=0.12.11",
+]
+
+[project.urls]
+Homepage = "https://github.com/higlass/simple-httpfs"
+Repository = "https://github.com/higlass/simple-httpfs"
+
+[project.scripts]
+simple-httpfs = "simple_httpfs.__main__:main"
+
+[tool.ruff]
+src = ["simple_httpfs"]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "B",  # bugbear
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "RUF",  # ruff-specific rules
+    "UP",  # pyupgrade
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["simple_httpfs"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--verbose",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+
+# Third party libraries without type stubs
+[[tool.mypy.overrides]]
+module = [
+    "diskcache.*",
+    "fuse.*",
+]
+ignore_missing_imports = true

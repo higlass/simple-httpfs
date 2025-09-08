@@ -2,15 +2,16 @@ import argparse
 import logging
 import os.path as op
 import sys
+from typing import Any
 
 from fuse import FUSE
 
 from .httpfs import HttpFs
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="""usage: simple-httpfs <mountpoint>"""
+        description="""usage: simple-httpfs [OPTIONS] <mountpoint>"""
     )
 
     parser.add_argument("mountpoint")
@@ -23,23 +24,29 @@ def main():
         help="Run in the foreground",
     )
 
-    parser.add_argument("--schema", default=None, type=str)
+    parser.add_argument("--sentinel", default="...")
 
-    parser.add_argument("--block-size", default=2 ** 20, type=int)
-
-    parser.add_argument("--disk-cache-size", default=2 ** 30, type=int)
-
-    parser.add_argument("--disk-cache-dir", default="/tmp/xx")
+    parser.add_argument("--block-size", default=2**20, type=int)
 
     parser.add_argument("--lru-capacity", default=400, type=int)
 
-    parser.add_argument("--aws-profile", default=None, type=str)
+    parser.add_argument("--disk-cache-size", default=2**30, type=int)
+
+    parser.add_argument("--disk-cache-dir", default="/tmp/xx")
 
     parser.add_argument(
         "--allow-other",
         action="store_true",
         default=False,
         help="Allow other users to access this fuse",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Enable debug logging",
     )
 
     parser.add_argument("-l", "--log", default=None, type=str)
@@ -53,58 +60,50 @@ def main():
         )
         sys.exit(1)
 
-    logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("simple-httpfs")
-    # logger.setLevel(logging.DEBUG)
-
     if args["log"]:
-        hdlr = logging.FileHandler(args["log"])
+        handler = logging.FileHandler(args["log"])
         formatter = logging.Formatter(
             "%(asctime)s %(levelname)s %(module)s: %(message)s"
         )
-        hdlr.setFormatter(formatter)
-        logger.addHandler(hdlr)
-
-    if args["schema"] is None:
-        schema = op.split(args["mountpoint"].strip("/"))[-1]
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
     else:
-        schema = args["schema"]
+        logging.basicConfig(level=logging.INFO)
 
-    if schema not in ["http", "https", "ftp", "s3"]:
-        print(
-            "Could not infer schema. Try specifying either http, "
-            "https or ftp using the --schema argument",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    if args["verbose"]:
+        logger.setLevel(logging.DEBUG)
 
-    start_msg = """
+    platform_settings: dict[str, Any] = {}
+    if sys.platform == "darwin":
+        platform_settings["noapplexattr"] = True
+        platform_settings["noappledouble"] = True
+
+    start_msg = f"""
 Mounting HTTP Filesystem...
-    schema: {schema}
-    mountpoint: {mountpoint}
-    foreground: {foreground}
-    allow others: {allow_other}
-""".format(
-        schema=schema,
-        mountpoint=args["mountpoint"],
-        foreground=args["foreground"],
-        allow_other=args["allow_other"],
-    )
+    mountpoint: {args["mountpoint"]}
+    foreground: {args["foreground"]}
+    allow others: {args["allow_other"]}
+    direct_io: True
+"""
     print(start_msg, file=sys.stderr)
 
-    fuse = FUSE(
-        HttpFs(
-            schema,
-            disk_cache_size=args["disk_cache_size"],
-            disk_cache_dir=args["disk_cache_dir"],
-            lru_capacity=args["lru_capacity"],
-            block_size=args["block_size"],
-            aws_profile=args["aws_profile"],
-            logger=logger,
-        ),
+    fs = HttpFs(
+        sentinel=args["sentinel"],
+        disk_cache_size=args["disk_cache_size"],
+        disk_cache_dir=args["disk_cache_dir"],
+        lru_capacity=args["lru_capacity"],
+        block_size=args["block_size"],
+        logger=logger,
+    )
+
+    _ = FUSE(
+        fs,
         args["mountpoint"],
         foreground=args["foreground"],
         allow_other=args["allow_other"],
+        direct_io=True,
+        **platform_settings,
     )
 
 
